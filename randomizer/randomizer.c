@@ -79,6 +79,15 @@ typedef struct random_struct {
 /* Initialize random list to NULL */
 random_struct *random_list = NULL;
 
+static int join_arch_name(char *destination,
+                          size_t destination_size,
+                          const char *name,
+                          const char *variation) {
+    int length = snprintf(destination, destination_size, "%s%s", name, variation);
+
+    return length >= 0 && (size_t)length < destination_size;
+}
+
 /* Signal handler for SIGSEGV -- make core with abort. */
 static void signal_sigsegv(int i) {
     (void)i;
@@ -99,7 +108,7 @@ int rndm(int min, int max) {
 }
 
 /* Parse the "random" file */
-static void parse_randoms() {
+static void parse_randoms(void) {
     FILE *fh;
     char line[MAX_BUF], name[MAX_BUF], randoms[MAX_BUF], *p;
     random_struct *random_tmp;
@@ -116,7 +125,7 @@ static void parse_randoms() {
             continue;
 
         /* Scan the line for Name:, and store it */
-        if (sscanf(line, "Name: %s\n", name)) {
+        if (sscanf(line, "Name: %4095s", name) == 1) {
             /* Loop through the next lines, and break out on Randoms: match. */
             while (fgets(line, MAX_BUF - 1, fh)) {
                 /* Ignore comments */
@@ -124,9 +133,14 @@ static void parse_randoms() {
                     continue;
 
                 /* Scan the next line for Randoms: and store it */
-                if (sscanf(line, "Randoms: %s\n", randoms)) {
+                if (sscanf(line, "Randoms: %4095s", randoms) == 1) {
                     /* Allocate a new random list structure */
-                    random_tmp = (random_struct *)malloc(sizeof(random_struct));
+                    random_tmp = calloc(1, sizeof(*random_tmp));
+                    if (random_tmp == NULL) {
+                        fprintf(stderr, "ERROR: Out of memory while reading random rules\n");
+                        fclose(fh);
+                        exit(EXIT_FAILURE);
+                    }
 
                     /* Append the old list structure to it */
                     random_tmp->next = random_list;
@@ -148,8 +162,12 @@ static void parse_randoms() {
                         random_tmp->variations++;
 
                         /* Allocate a new list of random variations */
-                        random_variations_tmp =
-                            (random_variations *)malloc(sizeof(random_variations));
+                        random_variations_tmp = calloc(1, sizeof(*random_variations_tmp));
+                        if (random_variations_tmp == NULL) {
+                            fprintf(stderr, "ERROR: Out of memory while reading variations\n");
+                            fclose(fh);
+                            exit(EXIT_FAILURE);
+                        }
 
                         /* Append the old list structure to it */
                         random_variations_tmp->next = random_tmp->randoms_start;
@@ -191,16 +209,18 @@ int main(int argc, char *argv[]) {
     /* If map file was not specified, show usage */
     if (argv[1] == NULL) {
         fprintf(stdout, "Usage: %s <map file to randomize>\n", argv[0]);
-        exit(0);
+        return EXIT_FAILURE;
     }
     /* Otherwise store the map file */
-    else
-        snprintf(filename, sizeof(filename), "%s", argv[1]);
+    else if (snprintf(filename, sizeof(filename), "%s", argv[1]) >= (int)sizeof(filename)) {
+        fprintf(stderr, "ERROR: Map filename is too long\n");
+        return EXIT_FAILURE;
+    }
 
     /* Now open the map file in read mode */
     if ((fh = fopen(filename, "r")) == NULL) {
-        fprintf(stdout, "ERROR: Failed to open specified file in read-only mode: '%s'\n", filename);
-        exit(0);
+        fprintf(stderr, "ERROR: Failed to open specified file in read-only mode: '%s'\n", filename);
+        return EXIT_FAILURE;
     }
 
     /* Seed the random number */
@@ -212,7 +232,7 @@ int main(int argc, char *argv[]) {
     /* Loop through all the lines of this map */
     while (fgets(line, MAX_BUF, fh)) {
         /* Check if this line has arch name, if so, store it */
-        if (sscanf(line, "arch %s\n", archname)) {
+        if (sscanf(line, "arch %4095s", archname) == 1) {
             /* Loop through the linked list of arches to randomize */
             for (random_tmp = random_list; random_tmp; random_tmp = random_tmp->next) {
                 /* The arch name on map must match with the one from the list,
@@ -234,11 +254,12 @@ int main(int argc, char *argv[]) {
                          * temporary buffer,
                          * with both the (partial) arch name and the random
                          * variation. */
-                        snprintf(tmparchname,
-                                 sizeof(tmparchname),
-                                 "%s%s",
-                                 random_tmp->archname,
-                                 random_variations_tmp->random_var);
+                        if (!join_arch_name(tmparchname,
+                                            sizeof(tmparchname),
+                                            random_tmp->archname,
+                                            random_variations_tmp->random_var)) {
+                            continue;
+                        }
 
                         /* Compare it, for secure also compare the lengths */
                         if (strcmp(archname, tmparchname) == 0 &&
@@ -263,11 +284,14 @@ int main(int argc, char *argv[]) {
                              * number,
                              * overwrite the old arch name and break out. */
                             if (i == random_int) {
-                                snprintf(archname,
-                                         sizeof(archname),
-                                         "%s%s",
-                                         random_tmp->archname,
-                                         random_variations_tmp->random_var);
+                                if (!join_arch_name(archname,
+                                                    sizeof(archname),
+                                                    random_tmp->archname,
+                                                    random_variations_tmp->random_var)) {
+                                    fprintf(stderr, "ERROR: Randomized archetype name is too long\n");
+                                    fclose(fh);
+                                    return EXIT_FAILURE;
+                                }
 
                                 break;
                             }
