@@ -235,7 +235,7 @@ if os.path.exists(client_build_config):
     fp = open(client_build_config)
 
     for line in fp:
-        match = re.match(".*PACKAGE_VERSION_\w+ (\d+).*", line)
+        match = re.match(r".*PACKAGE_VERSION_\w+ (\d+).*", line)
 
         if match:
             version += match.group(1) + "."
