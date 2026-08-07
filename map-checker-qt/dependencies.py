@@ -84,7 +84,9 @@ def load_lock(lock_path):
     destination = PurePosixPath(dependency["destination"])
     prefix = PurePosixPath(dependency["archive_prefix"])
     if (
-        destination.is_absolute()
+        "\\" in dependency["destination"]
+        or "\\" in dependency["archive_prefix"]
+        or destination.is_absolute()
         or prefix.is_absolute()
         or ".." in destination.parts
         or ".." in prefix.parts
@@ -218,6 +220,8 @@ def _extract_package(archive_path, candidate, dependency):
         raise DependencyError("could not open catalog archive: {}".format(error))
     with archive:
         for member in archive:
+            if "\\" in member.name:
+                raise DependencyError("catalog archive contains a non-portable path")
             member_path = PurePosixPath(member.name)
             try:
                 relative = member_path.relative_to(prefix)
@@ -229,7 +233,11 @@ def _extract_package(archive_path, candidate, dependency):
                 raise DependencyError("catalog archive contains an unsafe path")
             if member.isdir():
                 continue
-            if not member.isfile() or not relative.name.endswith(".py"):
+            if (
+                not member.isfile()
+                or member.size < 0
+                or not relative.name.endswith(".py")
+            ):
                 raise DependencyError("catalog archive package contains an unsafe member")
             relative_name = relative.as_posix()
             if relative_name in seen:

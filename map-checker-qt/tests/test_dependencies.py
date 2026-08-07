@@ -32,18 +32,18 @@ class DependencyTests(unittest.TestCase):
         self.temporary_directory.cleanup()
 
     @staticmethod
-    def archive(member_type=tarfile.REGTYPE):
+    def archive(member_type=tarfile.REGTYPE, member_name="model.py"):
         output = io.BytesIO()
         prefix = "atrinik-content-1.2.0/tools/content_catalog"
         with tarfile.open(fileobj=output, mode="w:gz") as archive:
             files = {
                 "__init__.py": b"def load_catalog(root):\n    return root\n",
-                "model.py": b"VALUE = 1\n",
+                member_name: b"VALUE = 1\n",
             }
             for name, contents in files.items():
                 info = tarfile.TarInfo("{}/{}".format(prefix, name))
                 info.size = len(contents)
-                if name == "model.py" and member_type != tarfile.REGTYPE:
+                if name == member_name and member_type != tarfile.REGTYPE:
                     info.type = member_type
                     info.linkname = "/outside"
                     info.size = 0
@@ -148,6 +148,17 @@ class DependencyTests(unittest.TestCase):
         self.write_lock(archive)
 
         with self.assertRaisesRegex(dependencies.DependencyError, "unsafe member"):
+            dependencies.sync(
+                self.root,
+                self.lock_path,
+                opener=lambda url, timeout: Response(archive),
+            )
+
+    def test_rejects_nonportable_archive_traversal(self):
+        archive = self.archive(member_name="..\\outside.py")
+        self.write_lock(archive)
+
+        with self.assertRaisesRegex(dependencies.DependencyError, "non-portable"):
             dependencies.sync(
                 self.root,
                 self.lock_path,
