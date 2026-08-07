@@ -4,4 +4,7 @@ build/
 map-checker-qt/.dependencies/
 map-checker-qt/map-checker.db
 map-checker-qt/map-checker.log*
+atrinik_bot/*.sqlite3
+atrinik_bot/credentials.sh
+atrinik_bot/runtime_state*.json
 *:Zone.Identifier
