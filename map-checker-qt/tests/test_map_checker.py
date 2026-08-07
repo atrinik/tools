@@ -1,6 +1,8 @@
 import contextlib
 import importlib.util
 import io
+import logging
+import logging.handlers
 from pathlib import Path
 import queue
 import tempfile
@@ -56,18 +58,19 @@ class FakeMapChecker:
         self.succeeded = succeeded
 
     def scan(self, **kwargs):
-        self.queue.put(
-            {
-                "file": {"path": "/content/arch/example.arc"},
-                "severity": "error",
-                "code": "duplicate-id",
-                "message": "duplicate archetype:example",
-                "description": "unused",
-                "explanation": "",
-                "loc": None,
-                "source": {"line": 12, "column": 7},
-            }
-        )
+        if not self.succeeded:
+            self.queue.put(
+                {
+                    "file": {"path": "/content/arch/example.arc"},
+                    "severity": "error",
+                    "code": "duplicate-id",
+                    "message": "duplicate archetype:example",
+                    "description": "unused",
+                    "explanation": "",
+                    "loc": None,
+                    "source": {"line": 12, "column": 7},
+                }
+            )
         return self.succeeded
 
     def exit(self):
@@ -133,6 +136,31 @@ class MapCheckerTests(unittest.TestCase):
                 map_checker_factory=lambda cfg: FakeMapChecker(cfg, succeeded=True),
             )
         self.assertEqual(0, result)
+
+    def test_repeated_main_calls_reuse_the_application_log_handler(self):
+        config = Config(self.root)
+        logger = logging.getLogger("interface-editor")
+        log_path = str((APP_ROOT / "map-checker.log").resolve())
+
+        def matching_handlers():
+            return [
+                handler
+                for handler in logger.handlers
+                if isinstance(handler, logging.handlers.RotatingFileHandler)
+                and handler.baseFilename == log_path
+            ]
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            for _ in range(2):
+                APPLICATION.main(
+                    ["--cli", "--catalog-only"],
+                    config_factory=lambda: config,
+                    map_checker_factory=lambda cfg: FakeMapChecker(
+                        cfg, succeeded=True
+                    ),
+                )
+
+        self.assertEqual(1, len(matching_handlers()))
 
 
 if __name__ == "__main__":

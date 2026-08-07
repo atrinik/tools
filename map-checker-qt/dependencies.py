@@ -164,6 +164,12 @@ def _paths(root, dependency):
 
 
 def _download(dependency, cache_path, opener=urlopen):
+    if cache_path.parent.is_symlink():
+        raise DependencyError(
+            "catalog archive cache directory must not be a symbolic link"
+        )
+    if cache_path.parent.exists() and not cache_path.parent.is_dir():
+        raise DependencyError("catalog archive cache path is not a directory")
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
@@ -273,6 +279,10 @@ def sync(root, lock_path, opener=urlopen, refresh=False):
             pass
     if cache_path.is_symlink():
         raise DependencyError("catalog archive cache must not be a symbolic link")
+    if cache_path.parent.is_symlink():
+        raise DependencyError(
+            "catalog archive cache directory must not be a symbolic link"
+        )
     if not cache_path.is_file() or _hash_file(cache_path) != dependency["sha256"]:
         _download(dependency, cache_path, opener)
 
@@ -324,7 +334,12 @@ def verify(root, lock_path):
         "commit": dependency["commit"],
         "archive_sha256": dependency["sha256"],
     }
-    if not isinstance(metadata, dict) or any(metadata.get(key) != value for key, value in expected.items()):
+    expected_keys = set(expected) | {"package_sha256"}
+    if (
+        not isinstance(metadata, dict)
+        or set(metadata) != expected_keys
+        or any(metadata.get(key) != value for key, value in expected.items())
+    ):
         raise DependencyError("installed catalog metadata does not match the lock")
     package_sha256 = _package_hash(destination)
     if metadata.get("package_sha256") != package_sha256:

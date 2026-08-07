@@ -167,6 +167,38 @@ class DependencyTests(unittest.TestCase):
                     opener=lambda url, timeout: Response(archive),
                 )
 
+    def test_rejects_symlinked_archive_cache_directory(self):
+        archive = self.archive()
+        self.write_lock(archive)
+        (self.root / ".dependencies").mkdir()
+        with tempfile.TemporaryDirectory() as external:
+            (self.root / ".dependencies/cache").symlink_to(
+                external, target_is_directory=True
+            )
+
+            with self.assertRaisesRegex(dependencies.DependencyError, "cache directory"):
+                dependencies.sync(
+                    self.root,
+                    self.lock_path,
+                    opener=lambda url, timeout: Response(archive),
+                )
+
+    def test_rejects_unrecognized_installed_metadata(self):
+        archive = self.archive()
+        self.write_lock(archive)
+        import_parent = dependencies.sync(
+            self.root,
+            self.lock_path,
+            opener=lambda url, timeout: Response(archive),
+        )
+        metadata_path = import_parent / "content_catalog/.atrinik-dependency.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["unexpected"] = True
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+        with self.assertRaisesRegex(dependencies.DependencyError, "metadata"):
+            dependencies.verify(self.root, self.lock_path)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -38,7 +38,7 @@ class CatalogValidator:
         return module
 
     @staticmethod
-    def _dependency_diagnostic(message, lock_path):
+    def _failure_diagnostic(message, lock_path, code, summary, explanation):
         return {
             "file": {
                 "name": lock_path.name,
@@ -46,14 +46,10 @@ class CatalogValidator:
                 "is_map": False,
             },
             "severity": "error",
-            "code": "catalog-dependency",
+            "code": code,
             "message": message,
-            "description": "Content catalog dependency unavailable: {}".format(
-                html.escape(message)
-            ),
-            "explanation": (
-                "Run map-checker-qt/dependencies.py sync and retry the scan."
-            ),
+            "description": "{}: {}".format(summary, html.escape(message)),
+            "explanation": explanation,
             "loc": None,
             "source": {"line": 1, "column": 1},
         }
@@ -61,9 +57,15 @@ class CatalogValidator:
     @staticmethod
     def _diagnostic(catalog_root, diagnostic):
         location = diagnostic.location
-        source_path = catalog_root / Path(location.path)
+        location_path = Path(location.path)
+        if location_path.is_absolute() or ".." in location_path.parts:
+            raise ValueError("catalog diagnostic contains an unsafe source path")
+        source_path = catalog_root / location_path
         related = None
         if diagnostic.related is not None:
+            related_path = Path(diagnostic.related.path)
+            if related_path.is_absolute() or ".." in related_path.parts:
+                raise ValueError("catalog diagnostic contains an unsafe related path")
             related = {
                 "path": diagnostic.related.path,
                 "line": diagnostic.related.line,
@@ -106,11 +108,30 @@ class CatalogValidator:
         catalog_root = Path(catalog_root).resolve()
         try:
             module = self.importer()
+        except Exception as error:
+            diagnostic = self._failure_diagnostic(
+                str(error),
+                self.lock_path,
+                "catalog-dependency",
+                "Content catalog dependency unavailable",
+                "Run map-checker-qt/dependencies.py sync and retry the scan.",
+            )
+            return [diagnostic], False
+        try:
             catalog = module.load_catalog(catalog_root)
-        except (DependencyError, ImportError, OSError, RuntimeError) as error:
-            return [self._dependency_diagnostic(str(error), self.lock_path)], False
-        diagnostics = [
-            self._diagnostic(catalog_root, diagnostic)
-            for diagnostic in catalog.diagnostics
-        ]
-        return diagnostics, not catalog.has_errors
+            diagnostics = [
+                self._diagnostic(catalog_root, diagnostic)
+                for diagnostic in catalog.diagnostics
+            ]
+            has_errors = catalog.has_errors
+        except Exception as error:
+            message = str(error) or error.__class__.__name__
+            diagnostic = self._failure_diagnostic(
+                message,
+                self.lock_path,
+                "catalog-validation",
+                "Content catalog validation failed",
+                "Confirm that the content root is readable and retry the scan.",
+            )
+            return [diagnostic], False
+        return diagnostics, not has_errors

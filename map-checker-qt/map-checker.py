@@ -384,14 +384,19 @@ def main(argv=None, config_factory=Config, map_checker_factory=MapChecker):
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
     application_path = os.path.dirname(os.path.realpath(__file__))
-    handler = logging.handlers.RotatingFileHandler(
-        filename=os.path.join(application_path, 'map-checker.log'),
-        maxBytes=1000 * 1000 * 10,
-        backupCount=5)
-    handler.setLevel(logging.DEBUG)
-    handler.setFormatter(formatter)
-
-    logger.addHandler(handler)
+    log_path = os.path.realpath(os.path.join(application_path, 'map-checker.log'))
+    if not any(
+        isinstance(existing, logging.handlers.RotatingFileHandler)
+        and existing.baseFilename == log_path
+        for existing in logger.handlers
+    ):
+        handler = logging.handlers.RotatingFileHandler(
+            filename=log_path,
+            maxBytes=1000 * 1000 * 10,
+            backupCount=5)
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
 
     config = config_factory()
 

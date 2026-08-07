@@ -62,6 +62,50 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual("error", diagnostics[0]["severity"])
         self.assertIn("dependencies.py sync", diagnostics[0]["explanation"])
 
+    def test_converts_unexpected_import_failure_to_a_diagnostic(self):
+        validator = CatalogValidator(
+            self.root, importer=lambda: (_ for _ in ()).throw(TypeError("bad module"))
+        )
+
+        diagnostics, valid = validator.validate(self.root)
+
+        self.assertFalse(valid)
+        self.assertEqual("catalog-dependency", diagnostics[0]["code"])
+        self.assertIn("bad module", diagnostics[0]["message"])
+
+    def test_converts_catalog_execution_failure_to_a_diagnostic(self):
+        def fail(root):
+            raise ValueError("malformed content")
+
+        validator = CatalogValidator(
+            self.root, importer=lambda: SimpleNamespace(load_catalog=fail)
+        )
+
+        diagnostics, valid = validator.validate(self.root)
+
+        self.assertFalse(valid)
+        self.assertEqual("catalog-validation", diagnostics[0]["code"])
+        self.assertIn("malformed content", diagnostics[0]["message"])
+
+    def test_rejects_diagnostic_paths_outside_content_root(self):
+        diagnostic = SimpleNamespace(
+            location=SimpleNamespace(path="../outside", line=1, column=1),
+            related=None,
+            severity="error",
+            code="invalid",
+            message="invalid",
+        )
+        catalog = SimpleNamespace(diagnostics=(diagnostic,), has_errors=True)
+        validator = CatalogValidator(
+            self.root,
+            importer=lambda: SimpleNamespace(load_catalog=lambda root: catalog),
+        )
+
+        diagnostics, valid = validator.validate(self.root)
+
+        self.assertFalse(valid)
+        self.assertEqual("catalog-validation", diagnostics[0]["code"])
+
     def test_import_replaces_an_unpinned_cached_module(self):
         package = self.root / "content_catalog"
         package.mkdir()
