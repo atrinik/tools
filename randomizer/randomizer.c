@@ -288,7 +288,8 @@ int main(int argc, char *argv[]) {
                                                     sizeof(archname),
                                                     random_tmp->archname,
                                                     random_variations_tmp->random_var)) {
-                                    fprintf(stderr, "ERROR: Randomized archetype name is too long\n");
+                                    fprintf(stderr,
+                                            "ERROR: Randomized archetype name is too long\n");
                                     fclose(fh);
                                     return EXIT_FAILURE;
                                 }
