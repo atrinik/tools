@@ -16,6 +16,8 @@ live with the component they operate on:
 - `mapset/`: operations over sets of maps
 - `randomizer/`: archetype variation utility
 - `worldviewer/`: browser-based world viewer
+- `atrinik_bot/`: headless client and automation engine using the shared native
+  pathfinding core and released protocol bindings
 - `split_symbols.sh` and `stacktrace.py`: native binary diagnostics
 
 Some utilities retain their original runtime and dependency requirements. Read
@@ -28,12 +30,12 @@ dependency setup, GUI configuration, and headless validation commands.
 
 ## Protocol consumers
 
-Python tools that exchange or decode game packets should depend on a pinned
+Python tools that exchange or decode game packets must depend on a pinned
 release of the
 [`atrinik-protocol`](https://github.com/atrinik/protocol) Python package. New
 tools must not copy command identifiers or packet definitions into this
 repository. Keeping the protocol dependency explicit lets applications,
-including future bot tooling, share the canonical generated bindings.
+including `atrinik_bot`, share the canonical generated bindings.
 
 ## License
 
