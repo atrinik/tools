@@ -26,6 +26,7 @@ class ErrorLevelCollection:
     """Collection of error levels."""
 
     def __init__(self):
+        self.error = ErrorLevel("error")
         self.warning = ErrorLevel("warning")
         self.low = ErrorLevel("low")
         self.medium = ErrorLevel("medium")
@@ -33,6 +34,7 @@ class ErrorLevelCollection:
         self.critical = ErrorLevel("critical")
         self.fixed = ErrorLevel("fixed")
 
+        self.error.set_color("qt", "#ff0000")
         self.warning.set_color("qt", "#000000")
         self.low.set_color("qt", "#FF00FF")
         self.medium.set_color("qt", "#00FFFF")

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "dependency": {
+    "name": "content_catalog",
+    "repository": "atrinik/content",
+    "tag": "v1.2.0",
+    "commit": "766cb6e67aa03dd86b1c333c607885df31c3aca5",
+    "url": "https://github.com/atrinik/content/releases/download/v1.2.0/atrinik-content-1.2.0.tar.gz",
+    "sha256": "c9ad1cfa555e2c9f23e7e814599ce67ea79a2779879787b6ad91f4a0c9e713f1",
+    "archive_prefix": "atrinik-content-1.2.0/tools/content_catalog",
+    "destination": ".dependencies/content_catalog"
+  }
+}

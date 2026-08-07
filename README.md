@@ -22,6 +22,10 @@ Some utilities retain their original runtime and dependency requirements. Read
 the documentation beside a utility before using it against a working content
 checkout.
 
+The Qt map checker consumes the checksum-pinned content catalog before every
+focused scan. See [`map-checker-qt/README.md`](map-checker-qt/README.md) for
+dependency setup, GUI configuration, and headless validation commands.
+
 ## Protocol consumers
 
 Python tools that exchange or decode game packets should depend on a pinned
@@ -35,4 +39,3 @@ including future bot tooling, share the canonical generated bindings.
 
 The extracted source retains its existing GNU General Public License terms.
 See [COPYING](COPYING).
-

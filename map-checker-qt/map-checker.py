@@ -14,6 +14,7 @@ import logging.handlers
 
 from system.checker import CheckerMap, CheckerObject, CheckerArchetype, \
     AbstractChecker
+from system.catalog import CatalogValidator
 from system.config import Config
 import system.constants
 from system.database import Database
@@ -75,6 +76,7 @@ class MapChecker:
         self.parser_artifact = ParserArtifact(config)
         self.parser_region = ParserRegion(config)
         self.db = Database(config, self.get_db_path())
+        self.catalog_validator = CatalogValidator(self.path)
 
         for collection in self.collections:
             self.collection_parser(collection).setCollection(collection)
@@ -95,6 +97,7 @@ class MapChecker:
         self._thread_running = False
         self._scan_status = ""
         self._scan_progress = 0
+        self._scan_succeeded = None
 
     @property
     def collections(self):
@@ -138,6 +141,10 @@ class MapChecker:
         """Returns absolute path to the maps directory."""
         return self.config.get("General", "path_dir_maps")
 
+    def get_content_root(self):
+        """Returns the root of the authored content repository."""
+        return self.config.get("General", "path_dir_content")
+
     def get_server_path(self):
         """Returns absolute path to the server directory."""
         return self.config.get("General", "path_dir_server")
@@ -151,13 +158,29 @@ class MapChecker:
         for checker in self.checkers:
             checker.fix = fix
 
-    def _scan(self, path, files, rec, fix, real_map_path):
+    def _scan(self, path, files, rec, fix, real_map_path, catalog_only):
         """
         Internal function for actually performing the scan. Used by scan,
         in both threading and non-threading mode. Changes things such as
         _scan_status, _scan_progress, etc. Puts info about errors into
         the queue object
         """
+
+        self._scan_succeeded = False
+        self._scan_status = "Validating content identities..."
+        diagnostics, valid = self.catalog_validator.validate(
+            self.get_content_root())
+        for diagnostic in diagnostics:
+            self.queue.put(diagnostic)
+        if not valid:
+            self._thread_running = False
+            return False
+        if catalog_only:
+            self._scan_progress = 1
+            self._scan_status = "Content identities valid."
+            self._scan_succeeded = True
+            self._thread_running = False
+            return True
 
         self.checkers_set_fix(fix)
 
@@ -186,7 +209,7 @@ class MapChecker:
         # Parse file definitions.
         for collection in self.collections:
             if not self._thread_running:
-                return
+                return False
 
             path = self.get_definitions_path(collection.name)
             checker = self.collection_checker(collection)
@@ -269,21 +292,27 @@ class MapChecker:
             i += 1
 
         self.db.save()
+        self._scan_succeeded = self._thread_running
+        self._thread_running = False
+        return self._scan_succeeded
 
     def scan(self, path=None, files=None, rec=True, fix=False,
-             real_map_path=None, threading=True):
+             real_map_path=None, threading=True, catalog_only=False):
         """Perform a new scan for errors."""
         if self._thread and self._thread.is_alive():
-            return
+            return False
 
         self._thread_running = True
 
         if threading:
             self._thread = Thread(target=self._scan,
-                                  args=(path, files, rec, fix, real_map_path))
+                                  args=(path, files, rec, fix, real_map_path,
+                                        catalog_only))
             self._thread.start()
+            return True
         else:
-            self._scan(path, files, rec, fix, real_map_path)
+            return self._scan(path, files, rec, fix, real_map_path,
+                              catalog_only)
 
     def scan_stop(self):
         """Stop current scan, if any."""
@@ -318,39 +347,75 @@ def excepthook(exc_type, exc_value, exc_tback):
     sys.__excepthook__(exc_type, exc_value, exc_tback)
 
 
-def main():
+def _print_cli_error(error, show_filenames=False):
+    source = error.get("source")
+    if source is not None:
+        print("{}:{}:{}: {} {}: {}".format(
+            error["file"]["path"],
+            source["line"],
+            source["column"],
+            error["severity"],
+            error.get("code", "catalog-error"),
+            error.get("message", error["description"]),
+        ))
+        return
+
+    severity = "<b>{}</b>".format(error["severity"].upper())
+    desc = error["description"]
+    if error["explanation"]:
+        desc += "<br>"
+        desc += format(error["explanation"])
+    fields = [severity, desc]
+    if error["loc"]:
+        fields.insert(0, " ".join(str(item) for item in error["loc"]))
+    if show_filenames:
+        fields.insert(0, error["file"]["path"])
+    print(" ".join(fields))
+
+
+def main(argv=None, config_factory=Config, map_checker_factory=MapChecker):
     sys.excepthook = excepthook
+
+    argv = sys.argv[1:] if argv is None else argv
 
     logger = logging.getLogger('interface-editor')
     logger.setLevel(logging.DEBUG)
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
-    handler = logging.handlers.RotatingFileHandler(filename='map-checker.log',
-                                                   maxBytes=1000 * 1000 * 10,
-                                                   backupCount=5)
-    handler.setLevel(logging.DEBUG)
-    handler.setFormatter(formatter)
+    application_path = os.path.dirname(os.path.realpath(__file__))
+    log_path = os.path.realpath(os.path.join(application_path, 'map-checker.log'))
+    if not any(
+        isinstance(existing, logging.handlers.RotatingFileHandler)
+        and existing.baseFilename == log_path
+        for existing in logger.handlers
+    ):
+        handler = logging.handlers.RotatingFileHandler(
+            filename=log_path,
+            maxBytes=1000 * 1000 * 10,
+            backupCount=5)
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
 
-    logger.addHandler(handler)
-
-    config = Config()
+    config = config_factory()
 
     # Create a MapChecker class.
-    map_checker = MapChecker(config)
+    map_checker = map_checker_factory(config)
     # Load the program's configuration.
     config.load(map_checker.path)
 
     # Try to parse our command line options.
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "hcfd:m:a:r:",
+        opts, args = getopt.getopt(argv, "hcfd:m:a:r:",
                                    ["help", "cli", "fix", "directory=",
                                     "map=", "arch=", "regions=", "text-only",
-                                    "real-map-path=", "show-filenames"])
+                                    "real-map-path=", "show-filenames",
+                                    "content-root=", "catalog-only"])
     except getopt.GetoptError as err:
         # Invalid option, show the error and exit.
         print(err)
-        sys.exit(2)
+        return 2
 
     cli = False
     fix = False
@@ -358,12 +423,13 @@ def main():
     path = None
     real_map_path = None
     show_filenames = False
+    catalog_only = False
 
     # Parse options.
     for o, a in opts:
         if o in ("-h", "--help"):
             # usage()
-            sys.exit()
+            return 0
         elif o in ("-c", "--cli"):
             cli = True
         elif o in ("-f", "--fix"):
@@ -376,6 +442,11 @@ def main():
             real_map_path = a
         elif o == "--show-filenames":
             show_filenames = True
+        elif o == "--content-root":
+            config.set("General", "path_dir_content", a)
+        elif o == "--catalog-only":
+            catalog_only = True
+            cli = True
         elif o in ("-a", "--arch"):
             # TODO: make this more robust?
             map_checker.definitionFilesData["archetype"]["path"] = a
@@ -401,36 +472,24 @@ def main():
 
         ret = app.exec_()
     else:
-        map_checker.scan(path=path, files=files, fix=fix,
-                         threading=False, real_map_path=real_map_path)
-        ret = 0
+        succeeded = map_checker.scan(path=path, files=files, fix=fix,
+                                     threading=False,
+                                     real_map_path=real_map_path,
+                                     catalog_only=catalog_only)
+        ret = 0 if succeeded else 1
 
         while map_checker.queue.qsize():
             try:
                 error = map_checker.queue.get(0)
-                severity = "<b>{}</b>".format(error["severity"].upper())
-                desc = error["description"]
-
-                if error["explanation"]:
-                    desc += "<br>"
-                    desc += format(error["explanation"])
-
-                l = [severity, desc]
-
-                if error["loc"]:
-                    l.insert(0, " ".join(str(i) for i in error["loc"]))
-
-                if show_filenames:
-                    l.insert(0, error["file"]["path"])
-
-                print(" ".join(l))
+                _print_cli_error(error, show_filenames)
             except queue.Empty:
                 pass
 
-    # Save configuration on exit.
-    config.save()
-    sys.exit(ret)
+    # Headless checks must not mutate a user's GUI preferences.
+    if not cli:
+        config.save()
+    return ret
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
