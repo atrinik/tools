@@ -1,4 +1,6 @@
 __pycache__/
 *.py[cod]
 build/
-
+map-checker-qt/.dependencies/
+map-checker-qt/map-checker.db
+map-checker-qt/map-checker.log*
