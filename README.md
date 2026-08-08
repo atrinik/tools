@@ -31,11 +31,14 @@ dependency setup, GUI configuration, and headless validation commands.
 ## Protocol consumers
 
 Python tools that exchange or decode game packets must depend on a pinned
-release of the
-[`atrinik-protocol`](https://github.com/atrinik/protocol) Python package. New
-tools must not copy command identifiers or packet definitions into this
-repository. Keeping the protocol dependency explicit lets applications,
-including `atrinik_bot`, share the canonical generated bindings.
+compatible protocol binding rather than copying command identifiers or packet
+definitions into this repository. The Classic `atrinik_bot` consumes the
+checksum-pinned v1.0.9 wheel from the archived
+[`atrinik/legacy-protocol`](https://github.com/atrinik/legacy-protocol)
+repository. New compatible consumers should use releases from the replacement
+[`atrinik/protocol`](https://github.com/atrinik/protocol) repository. Keeping
+the dependency explicit lets applications share canonical generated bindings
+for the protocol generation they implement.
 
 ## License
 
