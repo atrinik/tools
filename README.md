@@ -5,8 +5,13 @@ author, package, and diagnose Atrinik data and binaries. Component build tools
 live with the component they operate on:
 
 - content collection and validation: [`atrinik/content`](https://github.com/atrinik/content)
-- client dependency and packaging tools: [`atrinik/client`](https://github.com/atrinik/client)
-- server dependency, runtime, and packaging tools: [`atrinik/server`](https://github.com/atrinik/server)
+  (`main` for replacement, `1.x` for Classic)
+- client dependency and packaging tools: replacement
+  [`atrinik/client`](https://github.com/atrinik/client), maintained Classic
+  [`atrinik/classic/client`](https://github.com/atrinik/classic/tree/main/client)
+- server dependency, runtime, and packaging tools: replacement
+  [`atrinik/server`](https://github.com/atrinik/server), maintained Classic
+  [`atrinik/classic/server`](https://github.com/atrinik/classic/tree/main/server)
 
 ## Included utilities
 
