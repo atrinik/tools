@@ -17,17 +17,12 @@
 - New Python work must document its supported runtime and dependencies. Do not
   duplicate client/server command IDs in packet-aware tools; consume a released
   protocol binding when such tooling becomes maintained here.
-- The maintained `atrinik_bot` package owns headless client automation and the
-  buffer-oriented Python adapter over `Atrinik::Pathfinding`. Keep search
-  mechanics in the shared native core, wire IDs in the checksum-pinned protocol
-  release, and authored world identities in the content repository's audit
-  module. Mutable bot memory and credentials never belong in this repository.
+- Autonomous gameplay testing belongs in the independent
+  [`atrinik/playtester`](https://github.com/atrinik/playtester) repository; do
+  not add bot implementation or mutable bot state here.
 - Validate map-checker changes with its dependency unit tests, catalog tests,
   application tests, `python3 -W error -m compileall -q -f map-checker-qt`, and
   a checksum-pinned catalog-only scan of a content checkout.
-- Validate bot changes with its strict-warning native build, focused native
-  tests, the complete Python regression suite against a pinned content checkout
-  and collected runtime, and `python3 -W error -m compileall -q -f atrinik_bot`.
 - Commits and pull-request titles use Conventional Commits. Every squash merge
   is released by semantic-release.
 - Keep caches, databases, logs, downloaded dependencies, credentials, and other
