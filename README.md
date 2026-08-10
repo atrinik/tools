@@ -21,13 +21,14 @@ live with the component they operate on:
 - `mapset/`: operations over sets of maps
 - `randomizer/`: archetype variation utility
 - `worldviewer/`: browser-based world viewer
-- `atrinik_bot/`: headless client and automation engine using the shared native
-  pathfinding core and released protocol bindings
 - `split_symbols.sh` and `stacktrace.py`: native binary diagnostics
 
 Some utilities retain their original runtime and dependency requirements. Read
 the documentation beside a utility before using it against a working content
 checkout.
+
+The former `atrinik_bot/` utility is now maintained independently as
+[`atrinik/playtester`](https://github.com/atrinik/playtester).
 
 The Qt map checker consumes the checksum-pinned content catalog before every
 focused scan. See [`map-checker-qt/README.md`](map-checker-qt/README.md) for
@@ -37,13 +38,10 @@ dependency setup, GUI configuration, and headless validation commands.
 
 Python tools that exchange or decode game packets must depend on a pinned
 compatible protocol binding rather than copying command identifiers or packet
-definitions into this repository. The Classic `atrinik_bot` consumes the
-checksum-pinned v1.0.9 wheel from the archived
-[`atrinik/legacy-protocol`](https://github.com/atrinik/legacy-protocol)
-repository. New compatible consumers should use releases from the replacement
-[`atrinik/protocol`](https://github.com/atrinik/protocol) repository. Keeping
-the dependency explicit lets applications share canonical generated bindings
-for the protocol generation they implement.
+definitions into this repository. New compatible consumers should use releases
+from the replacement [`atrinik/protocol`](https://github.com/atrinik/protocol)
+repository. Keeping the dependency explicit lets applications share canonical
+generated bindings for the protocol generation they implement.
 
 ## License
 
