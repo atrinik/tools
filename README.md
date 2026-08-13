@@ -46,4 +46,16 @@ generated bindings for the protocol generation they implement.
 ## License
 
 The extracted source retains its existing GNU General Public License terms.
-See [COPYING](COPYING).
+See [COPYING](COPYING). Those terms are not a blanket outbound reuse ban:
+under the
+[canonical provenance policy](https://github.com/atrinik/atrinik/blob/main/docs/PROVENANCE.md),
+an MIT destination may inspect exact, independently separable material as
+source reference, copy it, migrate or port it, translate or adapt it, or
+relicense it only after the canonical audit proves each selected contribution
+is the applicable named grantor's original work. Each contribution must be
+solely authored by that grantor and fall within the row's temporal scope.
+Distinct contributions may cite different rows only when each independently
+satisfies one row. Rows cannot be combined to cover jointly authored
+contributions, generated output, or inseparable mixed work. Later material needs
+contemporaneous compatible permission. This does not change the source license
+here or approve a GPL dependency or bundle.
