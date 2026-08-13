@@ -1,8 +1,8 @@
 # Atrinik tools
 
-This repository contains the committed standalone utilities used to inspect,
-author, package, and diagnose Atrinik data and binaries. Component build tools
-live with the component they operate on:
+This repository contains the retained standalone utilities used to inspect and
+diagnose Atrinik data and binaries. Component build tools live with the
+component they operate on:
 
 - content collection and validation: [`atrinik/content`](https://github.com/atrinik/content)
   (`main` for replacement, `1.x` for Classic)
@@ -15,16 +15,10 @@ live with the component they operate on:
 
 ## Included utilities
 
-- `gridarta-types-convert/` and `gridarta_materials.pl`: editor data conversion
-- `map-checker/` and `map-checker-qt/`: map inspection applications
-- `map-maker/`: map-maker package assembly
-- `mapset/`: operations over sets of maps
-- `randomizer/`: archetype variation utility
-- `worldviewer/`: browser-based world viewer
+- `map-checker-qt/`: checksum-pinned map inspection application
 - `split_symbols.sh` and `stacktrace.py`: native binary diagnostics
 
-Some utilities retain their original runtime and dependency requirements. Read
-the documentation beside a utility before using it against a working content
+Read the Qt checker documentation before using it against a working content
 checkout.
 
 The former `atrinik_bot/` utility is now maintained independently as

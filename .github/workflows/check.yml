@@ -27,9 +27,3 @@ jobs:
           python3 map-checker-qt/dependencies.py validate
           python3 map-checker-qt/dependencies.py sync
           python3 map-checker-qt/dependencies.py verify
-
-      - name: Build randomizer
-        run: |
-          mkdir -p build
-          cc -std=gnu99 -Wall -Wextra -Werror \
-            -o build/randomizer randomizer/randomizer.c
