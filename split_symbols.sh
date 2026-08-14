@@ -6,7 +6,7 @@ usage() {
     printf 'Usage: %s <executable>\n' "${0##*/}"
 }
 
-if (( $# != 1 )); then
+if (( $# < 1 )); then
     usage
     exit 0
 fi
@@ -20,6 +20,10 @@ cd -- "${target_dir}"
 
 if [[ ! -f "${target_name}" ]]; then
     printf 'Not a regular file: %s\n' "${target}"
+    exit 1
+fi
+if [[ -L "${debug_name}" || ( -e "${debug_name}" && ! -f "${debug_name}" ) ]]; then
+    printf 'Refusing non-regular debug destination: %s\n' "${target_dir}/${debug_name}" >&2
     exit 1
 fi
 
@@ -40,5 +44,5 @@ strip --strip-debug --strip-unneeded -- "${scratch}/${target_name}"
     objcopy --add-gnu-debuglink="${debug_name}" -- "${target_name}"
 )
 chmod a-x -- "${scratch}/${debug_name}"
-mv -- "${scratch}/${debug_name}" "${debug_name}"
-mv -- "${scratch}/${target_name}" "${target_name}"
+mv -T -- "${scratch}/${debug_name}" "${debug_name}"
+mv -T -- "${scratch}/${target_name}" "${target_name}"

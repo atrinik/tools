@@ -51,7 +51,7 @@ def resolve_trace(executable: Path, trace: Path) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if len(args) != 2:
+    if len(args) < 2:
         print(f"Usage: {Path(sys.argv[0]).name} <executable> <stacktrace file>")
         return 0
     return resolve_trace(Path(args[0]), Path(args[1]))

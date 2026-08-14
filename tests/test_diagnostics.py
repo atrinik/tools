@@ -59,6 +59,16 @@ class StacktraceTests(unittest.TestCase):
             self.assertEqual(STACKTRACE.main([]), 0)
         self.assertIn("<executable> <stacktrace file>", output.getvalue())
 
+    def test_extra_arguments_remain_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trace = root / "trace.txt"
+            trace.write_text("plain frame\n", encoding="utf-8")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(STACKTRACE.main([str(root / "game"), str(trace), "ignored"]), 0)
+            self.assertEqual(output.getvalue(), "plain frame\n")
+
 
 class SplitSymbolsTests(unittest.TestCase):
     def test_usage_remains_successful(self) -> None:
@@ -70,6 +80,20 @@ class SplitSymbolsTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("<executable>", result.stdout)
+
+    def test_extra_arguments_are_ignored_and_nonregular_debug_target_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "sample"
+            subprocess.run(["cc", "-x", "c", "-g", "-o", str(executable), "-"], input="int main(void) { return 0; }\n", text=True, check=True)
+            debug = root / "sample.debug"
+            debug.mkdir()
+            before = executable.read_bytes()
+            result = subprocess.run([str(ROOT / "split_symbols.sh"), str(executable), "ignored"], check=False, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("Refusing non-regular debug destination", result.stderr)
+            self.assertEqual(executable.read_bytes(), before)
+            self.assertEqual(list(debug.iterdir()), [])
 
     def test_splits_disposable_elf_and_leaves_source_unchanged_on_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
