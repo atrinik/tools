@@ -1,39 +1,26 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-scriptdir=`dirname ${0}`
-scriptdir=`(cd ${scriptdir}; pwd)`
-scriptname=`basename ${0}`
+set -euo pipefail
 
-set -e
-
-function errorexit()
-{
-  errorcode=${1}
-  shift
-  echo $@
-  exit ${errorcode}
+usage() {
+    printf 'Usage: %s <executable>\n' "${0##*/}"
 }
 
-function usage()
-{
-  echo "USAGE ${scriptname} <tostrip>"
-}
-
-tostripdir=`dirname "$1"`
-tostripfile=`basename "$1"`
-
-
-if [ -z ${tostripfile} ] ; then
-  usage
-  errorexit 0 "tostrip must be specified"
+if (( $# != 1 )); then
+    usage
+    exit 0
 fi
 
-cd "${tostripdir}"
+target=$1
+target_dir=$(dirname -- "${target}")
+target_name=$(basename -- "${target}")
+debug_name="${target_name}.debug"
 
-debugfile="${tostripfile}.debug"
+cd -- "${target_dir}"
 
-echo "stripping ${tostripfile}, putting debug info into ${debugfile}"
-objcopy --only-keep-debug "${tostripfile}" "${debugfile}"
-strip --strip-debug --strip-unneeded "${tostripfile}"
-objcopy --add-gnu-debuglink="${debugfile}" "${tostripfile}"
-chmod -x "${debugfile}"
+printf 'Stripping %s; writing debug information to %s\n' \
+    "${target_name}" "${debug_name}"
+objcopy --only-keep-debug -- "${target_name}" "${debug_name}"
+strip --strip-debug --strip-unneeded -- "${target_name}"
+objcopy --add-gnu-debuglink="${debug_name}" -- "${target_name}"
+chmod a-x -- "${debug_name}"

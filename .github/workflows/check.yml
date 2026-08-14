@@ -21,6 +21,11 @@ jobs:
       - name: Validate Python syntax
         run: python3 -W error -m compileall -q -f .
 
+      - name: Validate diagnostic utilities
+        run: |
+          python3 -m unittest discover -s tests -v
+          shellcheck split_symbols.sh
+
       - name: Validate map checker catalog integration
         run: |
           python3 -m unittest discover -s map-checker-qt/tests -v
