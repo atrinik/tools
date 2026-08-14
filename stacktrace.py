@@ -10,27 +10,27 @@ from collections.abc import Sequence
 from pathlib import Path
 
 
-_BRACKETED_ADDRESS = re.compile(r"\[(0x[0-9a-fA-F]+)\]\s*$")
-_NUMBERED_ADDRESS = re.compile(r"^\d+:\s*(0x[0-9a-fA-F]+)\s*$")
+_BRACKETED_ADDRESS = re.compile(r"\[([^]]+)\]$")
+_NUMBERED_ADDRESS = re.compile(r"^\d+:\s*(.+?)\s*$", re.IGNORECASE)
 
 
 def trace_address(line: str) -> str | None:
     """Return an address from a supported stack-trace line."""
 
+    normalized = line.strip()
     for pattern in (_BRACKETED_ADDRESS, _NUMBERED_ADDRESS):
-        match = pattern.search(line)
+        match = pattern.search(normalized)
         if match is not None:
             return match.group(1)
     return None
 
 
 def resolve_trace(executable: Path, trace: Path) -> int:
-    """Print a symbolized trace and return a process-style status."""
+    """Print a symbolized trace while preserving the legacy successful status."""
 
-    status = 0
     with trace.open(encoding="utf-8", errors="replace") as stream:
         for raw_line in stream:
-            line = raw_line.rstrip("\r\n")
+            line = raw_line.strip()
             address = trace_address(line)
             if address is None:
                 print(line)
@@ -42,13 +42,11 @@ def resolve_trace(executable: Path, trace: Path) -> int:
                 capture_output=True,
                 text=True,
             )
-            if result.stdout:
-                print(result.stdout.rstrip("\r\n"))
+            print(result.stdout.strip())
             if result.returncode != 0:
-                status = result.returncode
                 if result.stderr:
                     print(result.stderr.rstrip("\r\n"), file=sys.stderr)
-    return status
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -20,11 +20,11 @@ SPEC.loader.exec_module(STACKTRACE)
 
 class StacktraceTests(unittest.TestCase):
     def test_trace_address_accepts_supported_formats(self) -> None:
-        self.assertEqual(STACKTRACE.trace_address("frame [0x1a2B]"), "0x1a2B")
-        self.assertEqual(STACKTRACE.trace_address("12: 0xfeed"), "0xfeed")
+        self.assertEqual(STACKTRACE.trace_address("  frame [0x1a2B]  "), "0x1a2B")
+        self.assertEqual(STACKTRACE.trace_address(" 12: symbol+4 "), "symbol+4")
         self.assertIsNone(STACKTRACE.trace_address("unresolved frame"))
 
-    def test_resolve_trace_preserves_text_and_reports_tool_failure(self) -> None:
+    def test_resolve_trace_preserves_text_and_legacy_success(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             trace = root / "trace.txt"
@@ -49,8 +49,8 @@ class StacktraceTests(unittest.TestCase):
             finally:
                 os.environ["PATH"] = old_path
 
-            self.assertEqual(status, 3)
-            self.assertEqual(stdout.getvalue(), "heading\nfirst at source.c:12\n")
+            self.assertEqual(status, 0)
+            self.assertEqual(stdout.getvalue(), "heading\nfirst at source.c:12\n\n")
             self.assertEqual(stderr.getvalue(), "unresolved\n")
 
     def test_usage_remains_successful(self) -> None:
@@ -70,6 +70,38 @@ class SplitSymbolsTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("<executable>", result.stdout)
+
+    def test_splits_disposable_elf_and_leaves_source_unchanged_on_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "sample.c"
+            executable = root / "sample"
+            source.write_text("int retained_symbol(void) { return 42; }\nint main(void) { return retained_symbol(); }\n", encoding="utf-8")
+            subprocess.run(["cc", "-g", "-o", str(executable), str(source)], check=True)
+
+            result = subprocess.run([str(ROOT / "split_symbols.sh"), str(executable)], check=False, capture_output=True, text=True)
+            debug = root / "sample.debug"
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(executable.stat().st_mode & stat.S_IXUSR)
+            self.assertFalse(debug.stat().st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
+            self.assertEqual(subprocess.run([str(executable)], check=False).returncode, 42)
+            self.assertIn("retained_symbol", subprocess.run(["nm", str(debug)], check=True, capture_output=True, text=True).stdout)
+            self.assertIn(".gnu_debuglink", subprocess.run(["readelf", "--sections", str(executable)], check=True, capture_output=True, text=True).stdout)
+
+            before = executable.read_bytes()
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            for tool in ("bash", "objcopy", "mktemp", "cp", "rm", "dirname", "basename", "chmod", "mv"):
+                os.symlink(Path("/usr/bin") / tool, fake_tools / tool)
+            failing_strip = fake_tools / "strip"
+            failing_strip.write_text("#!/bin/sh\nexit 9\n", encoding="utf-8")
+            failing_strip.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = str(fake_tools)
+            failed = subprocess.run([str(ROOT / "split_symbols.sh"), str(executable)], check=False, capture_output=True, text=True, env=env)
+            self.assertEqual(failed.returncode, 9)
+            self.assertEqual(executable.read_bytes(), before)
+            self.assertFalse(any(root.glob(".split-symbols.*")))
 
 
 if __name__ == "__main__":

@@ -18,9 +18,27 @@ debug_name="${target_name}.debug"
 
 cd -- "${target_dir}"
 
+if [[ ! -f "${target_name}" ]]; then
+    printf 'Not a regular file: %s\n' "${target}"
+    exit 1
+fi
+
+scratch=$(mktemp -d ".split-symbols.XXXXXXXX")
+cleanup() {
+    rm -rf -- "${scratch}"
+}
+trap cleanup EXIT
+
+cp -p -- "${target_name}" "${scratch}/${target_name}"
+
 printf 'Stripping %s; writing debug information to %s\n' \
     "${target_name}" "${debug_name}"
-objcopy --only-keep-debug -- "${target_name}" "${debug_name}"
-strip --strip-debug --strip-unneeded -- "${target_name}"
-objcopy --add-gnu-debuglink="${debug_name}" -- "${target_name}"
-chmod a-x -- "${debug_name}"
+objcopy --only-keep-debug -- "${target_name}" "${scratch}/${debug_name}"
+strip --strip-debug --strip-unneeded -- "${scratch}/${target_name}"
+(
+    cd -- "${scratch}"
+    objcopy --add-gnu-debuglink="${debug_name}" -- "${target_name}"
+)
+chmod a-x -- "${scratch}/${debug_name}"
+mv -- "${scratch}/${debug_name}" "${debug_name}"
+mv -- "${scratch}/${target_name}" "${target_name}"
