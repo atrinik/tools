@@ -75,17 +75,18 @@ have no baseline contribution set:
 | --- | --- | --- |
 | `LICENSE` | `124c2793a27bd9746d3ecdcb85c81664e9abe58a`; final wording in pull request #23 destination | Standard MIT text and Zoey Rose copyright notice; reviewed by `github:zoeyrose` |
 | `PROVENANCE.md` | `124c2793a27bd9746d3ecdcb85c81664e9abe58a`, `4d9184dc9b052e0dca44db273b895e89874f1b93`; final manifest-only change in pull request #23 destination | Agent-assisted record commissioned, directed, owned, granted, and reviewed by `github:zoeyrose` |
-| `split_symbols.sh` | `124c2793a27bd9746d3ecdcb85c81664e9abe58a`, `a41ffca9ea5bc737039e66b9ed51cb235a2523c1`; historical non-expressive fragments classified below | Agent-assisted expressive implementation commissioned, directed, owned, granted, and reviewed by `github:zoeyrose`; retained functional GNU-tool sequence separately non-copyrightable |
-| `stacktrace.py` | `124c2793a27bd9746d3ecdcb85c81664e9abe58a`, `a41ffca9ea5bc737039e66b9ed51cb235a2523c1`; historical non-expressive fragments classified below | Agent-assisted expressive implementation commissioned, directed, owned, granted, and reviewed by `github:zoeyrose`; standard syntax/scaffolding separately non-copyrightable |
+| `split_symbols.sh` | `124c2793a27bd9746d3ecdcb85c81664e9abe58a`, `a41ffca9ea5bc737039e66b9ed51cb235a2523c1`, `50911c73ee307bbddfbf68e46a88ea6c7804efe8`; historical non-expressive fragments classified below | Agent-assisted expressive implementation commissioned, directed, owned, granted, and reviewed by `github:zoeyrose`; retained functional GNU-tool sequence separately non-copyrightable |
+| `stacktrace.py` | `124c2793a27bd9746d3ecdcb85c81664e9abe58a`, `a41ffca9ea5bc737039e66b9ed51cb235a2523c1`, `50911c73ee307bbddfbf68e46a88ea6c7804efe8`; historical non-expressive fragments classified below | Agent-assisted expressive implementation commissioned, directed, owned, granted, and reviewed by `github:zoeyrose`; standard syntax/scaffolding separately non-copyrightable |
 | `tests/__init__.py` | `124c2793a27bd9746d3ecdcb85c81664e9abe58a` | Empty package marker; non-expressive metadata |
-| `tests/test_diagnostics.py` | `124c2793a27bd9746d3ecdcb85c81664e9abe58a`, `4d9184dc9b052e0dca44db273b895e89874f1b93`, `a41ffca9ea5bc737039e66b9ed51cb235a2523c1` | Agent-assisted test expression commissioned, directed, owned, granted, and reviewed by `github:zoeyrose` |
+| `tests/test_diagnostics.py` | `124c2793a27bd9746d3ecdcb85c81664e9abe58a`, `4d9184dc9b052e0dca44db273b895e89874f1b93`, `a41ffca9ea5bc737039e66b9ed51cb235a2523c1`, `50911c73ee307bbddfbf68e46a88ea6c7804efe8` | Agent-assisted test expression commissioned, directed, owned, granted, and reviewed by `github:zoeyrose` |
 
 The historic `split_symbols.sh` baseline blob
 `ce6030376eb25ddc9cd1566603d3448e6071c613` and `stacktrace.py` baseline blob
 `fa78cc708dd750628f6ae530e912ee657aa8d97e` are explicitly excluded. Commit
 `124c2793a27bd9746d3ecdcb85c81664e9abe58a` replaced their expressive
-implementations; `a41ffca9ea5bc737039e66b9ed51cb235a2523c1` completed compatibility and
-transactional failure behavior. Current `git blame` also names historical
+implementations; `a41ffca9ea5bc737039e66b9ed51cb235a2523c1` and
+`50911c73ee307bbddfbf68e46a88ea6c7804efe8` completed compatibility,
+transactional failure behavior, and exact-path safety. Current `git blame` also names historical
 commits `cd12a49557cb5b89a8b708fed1f3ca2510465786`,
 `400b50e0ce9e49c493abf4405fc31aebd175970f`, and
 `d5ea8b9856fd8a17bdb263ef5a51759acba4e83a` solely for blank lines, braces,
