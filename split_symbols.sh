@@ -18,7 +18,7 @@ debug_name="${target_name}.debug"
 
 cd -- "${target_dir}"
 
-if [[ ! -f "${target_name}" ]]; then
+if [[ -L "${target_name}" || ! -f "${target_name}" ]]; then
     printf 'Not a regular file: %s\n' "${target}"
     exit 1
 fi

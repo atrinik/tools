@@ -95,6 +95,20 @@ class SplitSymbolsTests(unittest.TestCase):
             self.assertEqual(executable.read_bytes(), before)
             self.assertEqual(list(debug.iterdir()), [])
 
+    def test_symlinked_executable_is_rejected_without_mutating_referent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "sample"
+            subprocess.run(["cc", "-x", "c", "-g", "-o", str(executable), "-"], input="int main(void) { return 0; }\n", text=True, check=True)
+            link = root / "linked-sample"
+            link.symlink_to(executable.name)
+            before = executable.read_bytes()
+            result = subprocess.run([str(ROOT / "split_symbols.sh"), str(link)], check=False, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(executable.read_bytes(), before)
+            self.assertFalse((root / "linked-sample.debug").exists())
+
     def test_splits_disposable_elf_and_leaves_source_unchanged_on_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
