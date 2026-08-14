@@ -33,7 +33,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-cp -p -- "${target_name}" "${scratch}/${target_name}"
+cp --preserve=all -- "${target_name}" "${scratch}/original"
+cp --preserve=all -- "${target_name}" "${scratch}/${target_name}"
+had_debug=false
+if [[ -f "${debug_name}" ]]; then
+    cp --preserve=all -- "${debug_name}" "${scratch}/previous.debug"
+    had_debug=true
+fi
 
 printf 'Stripping %s; writing debug information to %s\n' \
     "${target_name}" "${debug_name}"
@@ -45,4 +51,18 @@ strip --strip-debug --strip-unneeded -- "${scratch}/${target_name}"
 )
 chmod a-x -- "${scratch}/${debug_name}"
 mv -T -- "${scratch}/${debug_name}" "${debug_name}"
-mv -T -- "${scratch}/${target_name}" "${target_name}"
+if ! cp --preserve=mode,ownership,timestamps,xattr -- "${scratch}/${target_name}" "${target_name}"; then
+    rollback_status=0
+    cp --preserve=mode,ownership,timestamps,xattr -- "${scratch}/original" "${target_name}" || rollback_status=$?
+    if [[ ${had_debug} == true ]]; then
+        mv -T -- "${scratch}/previous.debug" "${debug_name}" || rollback_status=$?
+    else
+        rm -f -- "${debug_name}" || rollback_status=$?
+    fi
+    if (( rollback_status != 0 )); then
+        printf 'Failed to publish %s and rollback was incomplete\n' "${target}" >&2
+        exit "${rollback_status}"
+    fi
+    printf 'Failed to publish stripped executable: %s\n' "${target}" >&2
+    exit 1
+fi

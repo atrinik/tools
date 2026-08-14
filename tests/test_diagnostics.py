@@ -109,6 +109,53 @@ class SplitSymbolsTests(unittest.TestCase):
             self.assertEqual(executable.read_bytes(), before)
             self.assertFalse((root / "linked-sample.debug").exists())
 
+    def test_preserves_hardlink_identity_and_rolls_back_late_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "sample"
+            subprocess.run(["cc", "-x", "c", "-g", "-o", str(executable), "-"], input="int main(void) { return 0; }\n", text=True, check=True)
+            hardlink = root / "sample-link"
+            os.link(executable, hardlink)
+            os.setxattr(executable, b"user.tools-test", b"retained")
+            original_inode = executable.stat().st_ino
+            success = subprocess.run([str(ROOT / "split_symbols.sh"), str(executable)], check=False, capture_output=True, text=True)
+            self.assertEqual(success.returncode, 0, success.stderr)
+            self.assertEqual(executable.stat().st_ino, original_inode)
+            self.assertEqual(hardlink.stat().st_ino, original_inode)
+            self.assertEqual(executable.read_bytes(), hardlink.read_bytes())
+            self.assertEqual(os.getxattr(executable, b"user.tools-test"), b"retained")
+
+            original = executable.read_bytes()
+            debug = root / "sample.debug"
+            previous_debug = debug.read_bytes()
+            fake_tools = root / "late-failure-tools"
+            fake_tools.mkdir()
+            for tool in ("bash", "objcopy", "mktemp", "rm", "dirname", "basename", "chmod", "mv", "strip"):
+                os.symlink(Path("/usr/bin") / tool, fake_tools / tool)
+            fake_cp = fake_tools / "cp"
+            fake_cp.write_text(
+                "#!/bin/bash\n"
+                "count=$(<\"$COUNT_FILE\")\n"
+                "count=$((count + 1))\n"
+                "printf '%s' \"$count\" >\"$COUNT_FILE\"\n"
+                "if (( count == 4 )); then exit 9; fi\n"
+                "exec /usr/bin/cp \"$@\"\n",
+                encoding="utf-8",
+            )
+            fake_cp.chmod(0o755)
+            count_file = root / "cp-count"
+            count_file.write_text("0", encoding="ascii")
+            env = os.environ.copy()
+            env["PATH"] = str(fake_tools)
+            env["COUNT_FILE"] = str(count_file)
+            failed = subprocess.run([str(ROOT / "split_symbols.sh"), str(executable)], check=False, capture_output=True, text=True, env=env)
+            self.assertEqual(failed.returncode, 1)
+            self.assertIn("Failed to publish stripped executable", failed.stderr)
+            self.assertEqual(executable.read_bytes(), original)
+            self.assertEqual(debug.read_bytes(), previous_debug)
+            self.assertEqual(executable.stat().st_ino, original_inode)
+            self.assertFalse(any(root.glob(".split-symbols.*")))
+
     def test_splits_disposable_elf_and_leaves_source_unchanged_on_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
