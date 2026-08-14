@@ -53,8 +53,14 @@ chmod a-x -- "${scratch}/${debug_name}"
 if [[ ${had_debug} == true ]]; then
     if ! cp --preserve=mode,ownership,timestamps,xattr -- \
         "${scratch}/${debug_name}" "${debug_name}"; then
+        rollback_status=0
         cp --preserve=mode,ownership,timestamps,xattr -- \
-            "${scratch}/previous.debug" "${debug_name}" || true
+            "${scratch}/previous.debug" "${debug_name}" || rollback_status=$?
+        if (( rollback_status != 0 )); then
+            printf 'Failed to publish debug information and rollback was incomplete: %s\n' \
+                "${target_dir}/${debug_name}" >&2
+            exit "${rollback_status}"
+        fi
         printf 'Failed to publish debug information: %s\n' \
             "${target_dir}/${debug_name}" >&2
         exit 1

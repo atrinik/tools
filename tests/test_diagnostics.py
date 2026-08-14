@@ -141,7 +141,7 @@ class SplitSymbolsTests(unittest.TestCase):
                 "count=$(<\"$COUNT_FILE\")\n"
                 "count=$((count + 1))\n"
                 "printf '%s' \"$count\" >\"$COUNT_FILE\"\n"
-                "if (( count == 5 )); then exit 9; fi\n"
+                "case ,$FAIL_COUNTS, in *,$count,*) exit 9 ;; esac\n"
                 "exec /usr/bin/cp \"$@\"\n",
                 encoding="utf-8",
             )
@@ -151,6 +151,7 @@ class SplitSymbolsTests(unittest.TestCase):
             env = os.environ.copy()
             env["PATH"] = str(fake_tools)
             env["COUNT_FILE"] = str(count_file)
+            env["FAIL_COUNTS"] = "5"
             failed = subprocess.run([str(ROOT / "split_symbols.sh"), str(executable)], check=False, capture_output=True, text=True, env=env)
             self.assertEqual(failed.returncode, 1)
             self.assertIn("Failed to publish stripped executable", failed.stderr)
@@ -161,6 +162,26 @@ class SplitSymbolsTests(unittest.TestCase):
             self.assertEqual(debug_alias.read_bytes(), previous_debug)
             self.assertEqual(executable.stat().st_ino, original_inode)
             self.assertFalse(any(root.glob(".split-symbols.*")))
+
+            count_file.write_text("0", encoding="ascii")
+            env["FAIL_COUNTS"] = "4"
+            early = subprocess.run([str(ROOT / "split_symbols.sh"), str(executable)], check=False, capture_output=True, text=True, env=env)
+            self.assertEqual(early.returncode, 1)
+            self.assertIn("Failed to publish debug information", early.stderr)
+            self.assertNotIn("rollback was incomplete", early.stderr)
+            self.assertEqual(executable.read_bytes(), original)
+            self.assertEqual(debug.read_bytes(), previous_debug)
+            self.assertEqual(debug.stat().st_ino, debug_inode)
+            self.assertEqual(debug_alias.stat().st_ino, debug_inode)
+            self.assertEqual(os.getxattr(executable, b"user.tools-test"), b"retained")
+
+            count_file.write_text("0", encoding="ascii")
+            env["FAIL_COUNTS"] = "4,5"
+            incomplete = subprocess.run([str(ROOT / "split_symbols.sh"), str(executable)], check=False, capture_output=True, text=True, env=env)
+            self.assertEqual(incomplete.returncode, 9)
+            self.assertIn("rollback was incomplete", incomplete.stderr)
+            self.assertEqual(debug.stat().st_ino, debug_inode)
+            self.assertEqual(debug_alias.stat().st_ino, debug_inode)
 
     def test_splits_disposable_elf_and_leaves_source_unchanged_on_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
