@@ -1,5 +1,11 @@
 # Atrinik Qt map checker
 
+This complete subtree remains GPL-2.0-or-later under [LICENSE](LICENSE),
+including source, tests, configuration, `.ui` files, generated `ui_*.py` files,
+launchers, and this documentation. PyQt5 and the downloaded Atrinik content
+catalog retain their own dependency and distribution terms and are not
+relicensed here.
+
 The Qt map checker runs the authoritative Atrinik content identity catalog over
 the complete authored repository before it scans a selected map or directory.
 The catalog implementation is not copied into this repository: `catalog.lock.json`
