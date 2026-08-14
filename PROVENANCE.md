@@ -23,16 +23,17 @@ the baseline tree, and reviewed contributor, generated-file, dependency, and
 embedded-notice boundaries. No confidential identity mapping or restricted
 evidence was copied into this repository.
 
-The current maintainer and issue author, Zoey Rose (`github:zoeyrose`), attests
-through issue #22, root `LICENSE`, and pull request #23 that she personally
-authored, or commissioned and directed as agent-assisted work, every admitted
-human-authored contribution listed below; that she owns the rights needed to
-license those contributions; and that she licenses them under MIT. This is the
-explicit contemporaneous rights grant for both pre-transition and transition
-work. It is not inferred from Git names, email addresses, or tool use. No former
-identity is inferred or published. Pull request #23 is the public
-implementation, attestation, and review record; its final head and tree are the
-destination coordinates because a commit cannot contain its own hash.
+The current maintainer and issue author, Zoey Rose (`github:zoeyrose`), has
+explicitly confirmed and records through root `LICENSE` and pull request #23
+that she personally authored, or commissioned and directed as agent-assisted
+work, every admitted human-authored contribution listed below; that she owns
+the rights needed to license those contributions; and that she licenses them
+under MIT. This is the explicit contemporaneous rights grant for both
+pre-transition and transition work. It is not inferred from Git names, email
+addresses, or tool use. No former identity is inferred or published. Pull
+request #23 is the public implementation, attestation, and review record; its
+final head and tree are the destination coordinates because a commit cannot
+contain its own hash.
 
 The historical diagnostic implementations were not relicensed. Their baseline
 blobs remain GPL in history. The current implementations were authored under
