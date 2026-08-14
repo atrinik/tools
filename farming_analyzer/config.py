@@ -17,7 +17,7 @@ def _find_workspace_root() -> Path:
 
 
 WORKSPACE_ROOT = _find_workspace_root()
-ROOT = WORKSPACE_ROOT / "content-1x"
+ROOT = WORKSPACE_ROOT / "content"
 MAP_ROOT = ROOT / "maps"
 ARCH_ROOT = ROOT / "arch"
 SERVER_ROOT = WORKSPACE_ROOT / "classic" / "server" / "src"

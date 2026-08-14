@@ -60,8 +60,8 @@ class FarmingAnalyzerTest(unittest.TestCase):
                             ("slash", 25), ("pierce", 25)),
         )
 
-    def test_default_sources_use_split_classic_workspace_checkouts(self):
-        self.assertEqual("content-1x", ROOT.name)
+    def test_default_sources_use_shared_classic_workspace_checkouts(self):
+        self.assertEqual("content", ROOT.name)
         self.assertEqual(ROOT.parent / "classic" / "server" / "src", SERVER_ROOT)
         self.assertTrue((ROOT / "maps" / "regions.reg").is_file())
         self.assertTrue((SERVER_ROOT / "server" / "exp.c").is_file())

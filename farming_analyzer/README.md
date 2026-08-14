@@ -2,12 +2,12 @@
 
 The `farming_analyzer` package ranks repeatable farming locations directly
 from the classic Atrinik server and authored content. In the standard Atrinik
-workspace, it reads the sibling `classic/server` and `content-1x` checkouts. It
+workspace, it reads the sibling `classic/server` and `content` checkouts. It
 scans source maps without collecting resources or changing runtime state.
 
 The analyzer requires Python 3.11 or newer and uses only the Python standard
 library. Initialize the workspace's classic cohort before running it so the
-`classic` and `content-1x` checkouts are present.
+`classic` and shared `content@main` checkouts are present.
 
 Run it from the Atrinik workspace root with a combat skill level and measured attack:
 
@@ -21,7 +21,7 @@ checkout containing `arch/` and `maps/`:
 
 ```sh
 python3 -m farming_analyzer 18 --damage-per-attack 48 --attack-delay 0.667 \
-  --server-root ../classic/server/src --content-root ../content-1x
+  --server-root ../classic/server/src --content-root ../content
 ```
 
 Character level is not necessarily the relevant value. Atrinik awards combat

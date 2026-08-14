@@ -22,7 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("level", type=int, help="combat skill level used by calc_skill_exp")
     parser.add_argument("--content-root", type=Path, default=ROOT,
-                        help="classic authored-content checkout (default: sibling content-1x)")
+                        help="authored-content checkout (default: sibling content)")
     parser.add_argument("--server-root", type=Path, default=SERVER_ROOT,
                         help="classic server src directory (default: sibling classic/server/src)")
     parser.add_argument("--top", type=int, default=20, help="number of ranked maps to print")
