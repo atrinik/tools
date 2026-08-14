@@ -1,39 +1,91 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-scriptdir=`dirname ${0}`
-scriptdir=`(cd ${scriptdir}; pwd)`
-scriptname=`basename ${0}`
+set -euo pipefail
 
-set -e
-
-function errorexit()
-{
-  errorcode=${1}
-  shift
-  echo $@
-  exit ${errorcode}
+usage() {
+    printf 'Usage: %s <executable>\n' "${0##*/}"
 }
 
-function usage()
-{
-  echo "USAGE ${scriptname} <tostrip>"
-}
-
-tostripdir=`dirname "$1"`
-tostripfile=`basename "$1"`
-
-
-if [ -z ${tostripfile} ] ; then
-  usage
-  errorexit 0 "tostrip must be specified"
+if (( $# < 1 )); then
+    usage
+    exit 0
 fi
 
-cd "${tostripdir}"
+target=$1
+target_dir=$(dirname -- "${target}")
+target_name=$(basename -- "${target}")
+debug_name="${target_name}.debug"
 
-debugfile="${tostripfile}.debug"
+cd -- "${target_dir}"
 
-echo "stripping ${tostripfile}, putting debug info into ${debugfile}"
-objcopy --only-keep-debug "${tostripfile}" "${debugfile}"
-strip --strip-debug --strip-unneeded "${tostripfile}"
-objcopy --add-gnu-debuglink="${debugfile}" "${tostripfile}"
-chmod -x "${debugfile}"
+if [[ -L "${target_name}" || ! -f "${target_name}" ]]; then
+    printf 'Not a regular file: %s\n' "${target}"
+    exit 1
+fi
+if [[ -L "${debug_name}" || ( -e "${debug_name}" && ! -f "${debug_name}" ) ]]; then
+    printf 'Refusing non-regular debug destination: %s\n' "${target_dir}/${debug_name}" >&2
+    exit 1
+fi
+if [[ -e "${debug_name}" && "${debug_name}" -ef "${target_name}" ]]; then
+    printf 'Refusing debug destination that aliases executable: %s\n' \
+        "${target_dir}/${debug_name}" >&2
+    exit 1
+fi
+
+scratch=$(mktemp -d ".split-symbols.XXXXXXXX")
+cleanup() {
+    rm -rf -- "${scratch}"
+}
+trap cleanup EXIT
+
+cp --preserve=all -- "${target_name}" "${scratch}/original"
+cp --preserve=all -- "${target_name}" "${scratch}/${target_name}"
+had_debug=false
+if [[ -f "${debug_name}" ]]; then
+    cp --preserve=all -- "${debug_name}" "${scratch}/previous.debug"
+    had_debug=true
+fi
+
+printf 'Stripping %s; writing debug information to %s\n' \
+    "${target_name}" "${debug_name}"
+objcopy --only-keep-debug -- "${target_name}" "${scratch}/${debug_name}"
+strip --strip-debug --strip-unneeded -- "${scratch}/${target_name}"
+(
+    cd -- "${scratch}"
+    objcopy --add-gnu-debuglink="${debug_name}" -- "${target_name}"
+)
+chmod a-x -- "${scratch}/${debug_name}"
+if [[ ${had_debug} == true ]]; then
+    if ! cp --preserve=mode,ownership,timestamps,xattr -- \
+        "${scratch}/${debug_name}" "${debug_name}"; then
+        rollback_status=0
+        cp --preserve=mode,ownership,timestamps,xattr -- \
+            "${scratch}/previous.debug" "${debug_name}" || rollback_status=$?
+        if (( rollback_status != 0 )); then
+            printf 'Failed to publish debug information and rollback was incomplete: %s\n' \
+                "${target_dir}/${debug_name}" >&2
+            exit "${rollback_status}"
+        fi
+        printf 'Failed to publish debug information: %s\n' \
+            "${target_dir}/${debug_name}" >&2
+        exit 1
+    fi
+else
+    mv -T -- "${scratch}/${debug_name}" "${debug_name}"
+fi
+if ! cp --preserve=mode,ownership,timestamps,xattr -- "${scratch}/${target_name}" "${target_name}"; then
+    rollback_status=0
+    cp --preserve=mode,ownership,timestamps,xattr -- "${scratch}/original" "${target_name}" || rollback_status=$?
+    if [[ ${had_debug} == true ]]; then
+        cp --preserve=mode,ownership,timestamps,xattr -- \
+            "${scratch}/previous.debug" "${debug_name}" || rollback_status=$?
+    else
+        rm -f -- "${debug_name}" || rollback_status=$?
+    fi
+    if (( rollback_status != 0 )); then
+        printf 'Failed to publish %s and rollback was incomplete\n' "${target}" >&2
+        exit "${rollback_status}"
+    fi
+    printf 'Failed to publish stripped executable: %s\n' "${target}" >&2
+    exit 1
+fi

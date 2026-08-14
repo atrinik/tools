@@ -21,15 +21,14 @@ jobs:
       - name: Validate Python syntax
         run: python3 -W error -m compileall -q -f .
 
+      - name: Validate diagnostic utilities
+        run: |
+          python3 -m unittest discover -s tests -v
+          shellcheck split_symbols.sh
+
       - name: Validate map checker catalog integration
         run: |
           python3 -m unittest discover -s map-checker-qt/tests -v
           python3 map-checker-qt/dependencies.py validate
           python3 map-checker-qt/dependencies.py sync
           python3 map-checker-qt/dependencies.py verify
-
-      - name: Build randomizer
-        run: |
-          mkdir -p build
-          cc -std=gnu99 -Wall -Wextra -Werror \
-            -o build/randomizer randomizer/randomizer.c

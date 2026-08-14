@@ -1,11 +1,12 @@
 # Atrinik tools
 
-This repository contains the committed standalone utilities used to inspect,
-author, package, and diagnose Atrinik data and binaries. Component build tools
-live with the component they operate on:
+This repository contains the retained standalone utilities used to inspect and
+diagnose Atrinik data and binaries. Component build tools live with the
+component they operate on:
 
-- content collection and validation: [`atrinik/content`](https://github.com/atrinik/content)
-  (`main` for replacement, `1.x` for Classic)
+- content collection and validation: shared
+  [`atrinik/content@main`](https://github.com/atrinik/content); retained `1.x`
+  revisions are historical release and migration evidence only
 - client dependency and packaging tools: replacement
   [`atrinik/client`](https://github.com/atrinik/client), maintained Classic
   [`atrinik/classic/client`](https://github.com/atrinik/classic/tree/main/client)
@@ -15,16 +16,10 @@ live with the component they operate on:
 
 ## Included utilities
 
-- `gridarta-types-convert/` and `gridarta_materials.pl`: editor data conversion
-- `map-checker/` and `map-checker-qt/`: map inspection applications
-- `map-maker/`: map-maker package assembly
-- `mapset/`: operations over sets of maps
-- `randomizer/`: archetype variation utility
-- `worldviewer/`: browser-based world viewer
+- `map-checker-qt/`: checksum-pinned map inspection application
 - `split_symbols.sh` and `stacktrace.py`: native binary diagnostics
 
-Some utilities retain their original runtime and dependency requirements. Read
-the documentation beside a utility before using it against a working content
+Read the Qt checker documentation before using it against a working content
 checkout.
 
 The former `atrinik_bot/` utility is now maintained independently as
@@ -45,17 +40,15 @@ generated bindings for the protocol generation they implement.
 
 ## License
 
-The extracted source retains its existing GNU General Public License terms.
-See [COPYING](COPYING). Those terms are not a blanket outbound reuse ban:
-under the
-[canonical provenance policy](https://github.com/atrinik/atrinik/blob/main/docs/PROVENANCE.md),
-an MIT destination may inspect exact, independently separable material as
-source reference, copy it, migrate or port it, translate or adapt it, or
-relicense it only after the canonical audit proves each selected contribution
-is the applicable named grantor's original work. Each contribution must be
-solely authored by that grantor and fall within the row's temporal scope.
-Distinct contributions may cite different rows only when each independently
-satisfies one row. Rows cannot be combined to cover jointly authored
-contributions, generated output, or inseparable mixed work. Later material needs
-contemporaneous compatible permission. This does not change the source license
-here or approve a GPL dependency or bundle.
+This repository is MIT by default under the root [LICENSE](LICENSE), with one
+directory exception: the complete `map-checker-qt/` subtree remains
+GPL-2.0-or-later under [its own license](map-checker-qt/LICENSE). That exception
+includes the checker's source, tests, configuration, `.ui` files, generated
+`ui_*.py` files, launchers, and documentation. The current source archive is
+therefore not MIT-only.
+
+PyQt5 and the checksum-pinned downloaded content catalog retain their separate
+dependency and distribution terms and are not relicensed by either repository
+license. See [PROVENANCE.md](PROVENANCE.md) for the current-tree audit and the
+historical release boundary. Tags and releases `v1.0.0` through `v1.2.6`
+remain described by the GPL terms that applied when they were published.
