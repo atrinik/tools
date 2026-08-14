@@ -4,8 +4,9 @@ This repository contains the retained standalone utilities used to inspect and
 diagnose Atrinik data and binaries. Component build tools live with the
 component they operate on:
 
-- content collection and validation: [`atrinik/content`](https://github.com/atrinik/content)
-  (`main` for replacement, `1.x` for Classic)
+- content collection and validation: shared
+  [`atrinik/content@main`](https://github.com/atrinik/content); retained `1.x`
+  revisions are historical release and migration evidence only
 - client dependency and packaging tools: replacement
   [`atrinik/client`](https://github.com/atrinik/client), maintained Classic
   [`atrinik/classic/client`](https://github.com/atrinik/classic/tree/main/client)

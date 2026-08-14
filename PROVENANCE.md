@@ -23,31 +23,68 @@ the baseline tree, and reviewed contributor, generated-file, dependency, and
 embedded-notice boundaries. No confidential identity mapping or restricted
 evidence was copied into this repository.
 
-The historical `split_symbols.sh` and `stacktrace.py` implementations were not
-relicensed. Their predecessor bytes remain GPL in history; the current files
-are new implementations contributed under the root MIT license from their
-small public command-line contracts. Repository policy, documentation, tests,
-and automation are likewise contemporaneously adopted under MIT by the
-transition. The mechanical Dependabot version-coordinate substitution in the
-pre-transition workflow contributes no retained expressive implementation that
-requires a historical grant. Consequently no historical identity attestation
-is used to place a file in the MIT-default scope; any unresolved historical
-identity remains fail-closed and historical only.
+The current maintainer and issue author, Zoey Rose (`github:zoeyrose`), reviewed
+the exact contribution scopes below and authorized the contributions she holds
+under MIT through issue #22, root `LICENSE`, and pull request #23. Every admitted
+pre-transition contribution was made in 2026 under that same current public
+identity; no former identity is inferred or published. The review uses a
+contemporaneous rights basis, not either historical grant row. Pull request #23
+is the public implementation and review record; its final head and tree are the
+destination coordinates because a commit cannot contain its own hash.
+
+The historical diagnostic implementations were not relicensed. Their baseline
+blobs remain GPL in history; the current files are new implementations from
+their small public command-line contracts. The mechanical Dependabot
+version-coordinate substitution is separately classified below and contributes
+no retained expressive implementation requiring a grant. Consequently no
+historical identity attestation is used to place a file in the MIT-default
+scope; any unresolved historical identity remains fail-closed and historical
+only.
+
+## Contribution ledger
+
+The commit lists are the complete baseline line-provenance sets from
+`git blame --line-porcelain 7777cf9... -- <path>`, after following each path's
+complete history. All listed commits except the separately identified
+Dependabot update are solely attributed to Zoey Rose's current public identity
+and receive the contemporaneous MIT authorization above.
+
+| Current path | Exact admitted source contributions | Classification, transformation, and review |
+| --- | --- | --- |
+| `.gitignore` | `a6904f87ec9cc02294abf2293e4d1e462653dece`, `56fa28993ef2bbf38815074a14c5f4b6fe9a137e`, `68a9d457f19c608b2e848c7de1496b7154af7633` | Current-public-identity work; retained as MIT metadata and reviewed by `github:zoeyrose` |
+| `.github/dependabot.yml` | `843a3dff3a36135a9a60aff7c6a3fcc762f704d3` | Current-public-identity work; retained as MIT dependency policy and reviewed by `github:zoeyrose` |
+| `.github/workflows/check.yml` | `a6904f87ec9cc02294abf2293e4d1e462653dece`, `25dbbbc00d8bbeb98c7d0f73cdf56145b517c398`, `55d2ce6f8d09a52d3ce4b25447d187900213179c`, `56fa28993ef2bbf38815074a14c5f4b6fe9a137e`, transition commit `124c2793a27bd9746d3ecdcb85c81664e9abe58a` | Current-public-identity workflow expression; retired steps removed and MIT tests added; reviewed by `github:zoeyrose` |
+| `.github/workflows/pr-title.yml` | `a6904f87ec9cc02294abf2293e4d1e462653dece` | Current-public-identity work; retained as MIT policy and reviewed by `github:zoeyrose` |
+| `.github/workflows/release.yml` | `77b39021353a4aec36632001d232f085d5b65667`, `68bf7139c98b1d6d88ee2a3f475a20cbeaee989e`, `25dbbbc00d8bbeb98c7d0f73cdf56145b517c398`, `6dfd98d630c6194b1545d95e55a5ca69d903129a`, `a90cfb5b92c1c6cc4f55a0d92949593457be604e` | Current-public-identity workflow expression; retained under contemporaneous MIT authorization and reviewed by `github:zoeyrose` |
+| `.github/workflows/check.yml`, `.github/workflows/release.yml` | Dependabot commit `80f14561b9090b1573a89feaf75053a490a891bc` | Separately classified non-copyrightable mechanical substitution of the factual immutable `actions/checkout` version/commit coordinate; no bot-authored expression or grant presumed |
+| `.releaserc.json` | `77b39021353a4aec36632001d232f085d5b65667`, `25dbbbc00d8bbeb98c7d0f73cdf56145b517c398`, `49df09157f1bc701bc5a48ae2e21c5b48dbc65cc`, `7d95669c6756219779907811386d64c2492ddc46` | Current-public-identity release configuration; contemporaneously authorized under MIT and reviewed by `github:zoeyrose` |
+| `AGENTS.md` | `68a9d457f19c608b2e848c7de1496b7154af7633`, `75bf3a2304cc9ac7f03efe4f2f3c9f6bbb11acad`, `7777cf9f9ab6deb58de8a481dfccd6b05d86e3e1`, transition commit `124c2793a27bd9746d3ecdcb85c81664e9abe58a` | Current-public-identity documentation, rewritten for the mixed boundary and reviewed by `github:zoeyrose` |
+| `CONTRIBUTING.md` | `8469be5cfa3a3ef207607fec87fa609c8d585d7c`, `75bf3a2304cc9ac7f03efe4f2f3c9f6bbb11acad`, `7777cf9f9ab6deb58de8a481dfccd6b05d86e3e1`, transition commit `124c2793a27bd9746d3ecdcb85c81664e9abe58a` | Current-public-identity documentation, rewritten for default/exception contribution scopes and reviewed by `github:zoeyrose` |
+| `README.md` | `a6904f87ec9cc02294abf2293e4d1e462653dece`, `b0f27045a0491fd9d3f36d8ac63159c713a6c601`, `75bf3a2304cc9ac7f03efe4f2f3c9f6bbb11acad`, `56fa28993ef2bbf38815074a14c5f4b6fe9a137e`, `55d2ce6f8d09a52d3ce4b25447d187900213179c`, `72f0bf821fb149ed4d2212cae520de6644db44b6`, `7777cf9f9ab6deb58de8a481dfccd6b05d86e3e1`, transition commit `124c2793a27bd9746d3ecdcb85c81664e9abe58a` | Current-public-identity documentation; retired paths removed and license boundary rewritten; reviewed by `github:zoeyrose` |
+
+The historic `split_symbols.sh` baseline blob
+`ce6030376eb25ddc9cd1566603d3448e6071c613` and `stacktrace.py` baseline blob
+`fa78cc708dd750628f6ae530e912ee657aa8d97e` are explicitly excluded. Commit
+`124c2793a27bd9746d3ecdcb85c81664e9abe58a` replaces them at the same
+destination paths with new MIT blobs
+`437751462e4a5b9bbb8a7b5e804ac4c5a8bc8559` and
+`6a772b02fc58c6ac89193997a2badcd9b2a80798`, respectively. Reviewer
+`github:zoeyrose` confirmed the replacements admit no predecessor source bytes.
 
 ## Per-file inventory
 
 | Current path | Classification and rights basis | Transformation / review |
 | --- | --- | --- |
 | `LICENSE` | Standard MIT license text | New default license; not project implementation |
-| `.gitignore` | Contemporaneous MIT repository metadata | Reviewed for generated and mutable paths |
-| `.github/dependabot.yml` | Contemporaneous MIT repository metadata | Dependency-update schedule; no vendored material |
-| `.github/workflows/check.yml` | Contemporaneous MIT repository metadata | Retained validation only; immutable Action pin |
-| `.github/workflows/pr-title.yml` | Contemporaneous MIT repository metadata | Conventional-title policy; immutable Action-free workflow |
-| `.github/workflows/release.yml` | Contemporaneous MIT repository metadata | Semantic-release policy; immutable Action pins |
-| `.releaserc.json` | Contemporaneous MIT repository metadata | Semantic-release configuration |
-| `AGENTS.md` | Contemporaneous MIT documentation | Rewritten for the mixed-license live tree |
-| `CONTRIBUTING.md` | Contemporaneous MIT documentation | Rewritten for default and exception scopes |
-| `README.md` | Contemporaneous MIT documentation | Rewritten for retained tools and license disclosure |
+| `.gitignore` | Contribution ledger above | Reviewed for generated and mutable paths |
+| `.github/dependabot.yml` | Contribution ledger above | Dependency-update schedule; no vendored material |
+| `.github/workflows/check.yml` | Contribution ledger above | Retained validation only; immutable Action pin |
+| `.github/workflows/pr-title.yml` | Contribution ledger above | Conventional-title policy; immutable Action-free workflow |
+| `.github/workflows/release.yml` | Contribution ledger above | Semantic-release policy; immutable Action pins |
+| `.releaserc.json` | Contribution ledger above | Semantic-release configuration |
+| `AGENTS.md` | Contribution ledger above | Rewritten for the mixed-license live tree |
+| `CONTRIBUTING.md` | Contribution ledger above | Rewritten for default and exception scopes |
+| `README.md` | Contribution ledger above | Rewritten for retained tools and license disclosure |
 | `PROVENANCE.md` | Contemporaneous MIT provenance record | New complete-tree audit record |
 | `split_symbols.sh` | Contemporaneous MIT reimplementation | Historical GPL bytes excluded; CLI contract preserved |
 | `stacktrace.py` | Contemporaneous MIT reimplementation | Historical GPL bytes excluded; CLI contract preserved |

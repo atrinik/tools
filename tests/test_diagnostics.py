@@ -63,7 +63,7 @@ class StacktraceTests(unittest.TestCase):
 class SplitSymbolsTests(unittest.TestCase):
     def test_usage_remains_successful(self) -> None:
         result = subprocess.run(
-            ["bash", str(ROOT / "split_symbols.sh")],
+            [str(ROOT / "split_symbols.sh")],
             check=False,
             capture_output=True,
             text=True,
