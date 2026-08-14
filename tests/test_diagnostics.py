@@ -128,6 +128,9 @@ class SplitSymbolsTests(unittest.TestCase):
             original = executable.read_bytes()
             debug = root / "sample.debug"
             previous_debug = debug.read_bytes()
+            debug_alias = root / "sample.debug.alias"
+            os.link(debug, debug_alias)
+            debug_inode = debug.stat().st_ino
             fake_tools = root / "late-failure-tools"
             fake_tools.mkdir()
             for tool in ("bash", "objcopy", "mktemp", "rm", "dirname", "basename", "chmod", "mv", "strip"):
@@ -138,7 +141,7 @@ class SplitSymbolsTests(unittest.TestCase):
                 "count=$(<\"$COUNT_FILE\")\n"
                 "count=$((count + 1))\n"
                 "printf '%s' \"$count\" >\"$COUNT_FILE\"\n"
-                "if (( count == 4 )); then exit 9; fi\n"
+                "if (( count == 5 )); then exit 9; fi\n"
                 "exec /usr/bin/cp \"$@\"\n",
                 encoding="utf-8",
             )
@@ -153,6 +156,9 @@ class SplitSymbolsTests(unittest.TestCase):
             self.assertIn("Failed to publish stripped executable", failed.stderr)
             self.assertEqual(executable.read_bytes(), original)
             self.assertEqual(debug.read_bytes(), previous_debug)
+            self.assertEqual(debug.stat().st_ino, debug_inode)
+            self.assertEqual(debug_alias.stat().st_ino, debug_inode)
+            self.assertEqual(debug_alias.read_bytes(), previous_debug)
             self.assertEqual(executable.stat().st_ino, original_inode)
             self.assertFalse(any(root.glob(".split-symbols.*")))
 

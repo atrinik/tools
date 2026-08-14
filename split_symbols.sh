@@ -50,12 +50,24 @@ strip --strip-debug --strip-unneeded -- "${scratch}/${target_name}"
     objcopy --add-gnu-debuglink="${debug_name}" -- "${target_name}"
 )
 chmod a-x -- "${scratch}/${debug_name}"
-mv -T -- "${scratch}/${debug_name}" "${debug_name}"
+if [[ ${had_debug} == true ]]; then
+    if ! cp --preserve=mode,ownership,timestamps,xattr -- \
+        "${scratch}/${debug_name}" "${debug_name}"; then
+        cp --preserve=mode,ownership,timestamps,xattr -- \
+            "${scratch}/previous.debug" "${debug_name}" || true
+        printf 'Failed to publish debug information: %s\n' \
+            "${target_dir}/${debug_name}" >&2
+        exit 1
+    fi
+else
+    mv -T -- "${scratch}/${debug_name}" "${debug_name}"
+fi
 if ! cp --preserve=mode,ownership,timestamps,xattr -- "${scratch}/${target_name}" "${target_name}"; then
     rollback_status=0
     cp --preserve=mode,ownership,timestamps,xattr -- "${scratch}/original" "${target_name}" || rollback_status=$?
     if [[ ${had_debug} == true ]]; then
-        mv -T -- "${scratch}/previous.debug" "${debug_name}" || rollback_status=$?
+        cp --preserve=mode,ownership,timestamps,xattr -- \
+            "${scratch}/previous.debug" "${debug_name}" || rollback_status=$?
     else
         rm -f -- "${debug_name}" || rollback_status=$?
     fi
