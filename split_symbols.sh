@@ -26,6 +26,11 @@ if [[ -L "${debug_name}" || ( -e "${debug_name}" && ! -f "${debug_name}" ) ]]; t
     printf 'Refusing non-regular debug destination: %s\n' "${target_dir}/${debug_name}" >&2
     exit 1
 fi
+if [[ -e "${debug_name}" && "${debug_name}" -ef "${target_name}" ]]; then
+    printf 'Refusing debug destination that aliases executable: %s\n' \
+        "${target_dir}/${debug_name}" >&2
+    exit 1
+fi
 
 scratch=$(mktemp -d ".split-symbols.XXXXXXXX")
 cleanup() {

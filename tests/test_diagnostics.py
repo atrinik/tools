@@ -109,6 +109,23 @@ class SplitSymbolsTests(unittest.TestCase):
             self.assertEqual(executable.read_bytes(), before)
             self.assertFalse((root / "linked-sample.debug").exists())
 
+    def test_debug_destination_cannot_alias_executable_inode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "sample"
+            subprocess.run(["cc", "-x", "c", "-g", "-o", str(executable), "-"], input="int main(void) { return 0; }\n", text=True, check=True)
+            debug = root / "sample.debug"
+            os.link(executable, debug)
+            before = executable.read_bytes()
+            inode = executable.stat().st_ino
+            result = subprocess.run([str(ROOT / "split_symbols.sh"), str(executable)], check=False, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("aliases executable", result.stderr)
+            self.assertEqual(executable.read_bytes(), before)
+            self.assertEqual(debug.read_bytes(), before)
+            self.assertEqual(executable.stat().st_ino, inode)
+            self.assertEqual(debug.stat().st_ino, inode)
+
     def test_preserves_hardlink_identity_and_rolls_back_late_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
