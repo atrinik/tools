@@ -17,6 +17,7 @@ component they operate on:
 ## Included utilities
 
 - `map-checker-qt/`: checksum-pinned map inspection application
+- `farming_analyzer/`: source-derived Classic farming-location analysis
 - `split_symbols.sh` and `stacktrace.py`: native binary diagnostics
 
 Read the Qt checker documentation before using it against a working content
