@@ -83,6 +83,14 @@ class ReleasePreflightTests(unittest.TestCase):
             "url": self.DOWNLOAD_URL,
             "sha256": "b" * 64,
             "archive_prefix": "atrinik-content-1.2.0/tools/content_catalog",
+            "support_paths": [
+                "schemas/authored-content-v1/field-metadata.json",
+                "schemas/authored-content-v1/source.json",
+                "tools/content_constraints.py",
+                "tools/content_contracts",
+                "tools/content_core",
+                "tools/syntax_evaluation",
+            ],
             "destination": ".dependencies/content_catalog",
         }
         dependency.update(overrides)

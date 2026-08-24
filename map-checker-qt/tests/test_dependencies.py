@@ -32,9 +32,19 @@ class DependencyTests(unittest.TestCase):
         self.temporary_directory.cleanup()
 
     @staticmethod
-    def archive(member_type=tarfile.REGTYPE, member_name="model.py"):
+    def archive(
+        member_type=tarfile.REGTYPE, member_name="model.py", include_support=True
+    ):
         output = io.BytesIO()
         prefix = "atrinik-content-1.2.0/tools/content_catalog"
+        support_files = {
+            "tools/content_core/__init__.py": b"# content core\n",
+            "tools/content_contracts/__init__.py": b"# content contracts\n",
+            "tools/content_constraints.py": b"# content constraints\n",
+            "tools/syntax_evaluation/__init__.py": b"# syntax evaluation\n",
+            "schemas/authored-content-v1/field-metadata.json": b"{}\n",
+            "schemas/authored-content-v1/source.json": b"{}\n",
+        }
         with tarfile.open(fileobj=output, mode="w:gz") as archive:
             files = {
                 "__init__.py": b"def load_catalog(root):\n    return root\n",
@@ -49,6 +59,11 @@ class DependencyTests(unittest.TestCase):
                     info.size = 0
                     archive.addfile(info)
                 else:
+                    archive.addfile(info, io.BytesIO(contents))
+            if include_support:
+                for name, contents in support_files.items():
+                    info = tarfile.TarInfo("atrinik-content-1.2.0/{}".format(name))
+                    info.size = len(contents)
                     archive.addfile(info, io.BytesIO(contents))
         return output.getvalue()
 
@@ -68,6 +83,7 @@ class DependencyTests(unittest.TestCase):
                         "archive_prefix": (
                             "atrinik-content-1.2.0/tools/content_catalog"
                         ),
+                        "support_paths": list(dependencies.REQUIRED_SUPPORT_PATHS),
                         "destination": ".dependencies/content_catalog",
                     },
                 }
@@ -85,8 +101,9 @@ class DependencyTests(unittest.TestCase):
             opener=lambda url, timeout: Response(archive),
         )
 
-        self.assertEqual(self.root / ".dependencies", import_parent)
-        self.assertTrue((import_parent / "content_catalog/__init__.py").is_file())
+        self.assertEqual(self.root / ".dependencies/content_catalog", import_parent)
+        self.assertTrue((import_parent / "tools/content_catalog/__init__.py").is_file())
+        self.assertTrue((import_parent / "tools/content_core/__init__.py").is_file())
         self.assertEqual(import_parent, dependencies.verify(self.root, self.lock_path))
 
     def test_rejects_archive_with_mismatched_digest(self):
@@ -112,6 +129,17 @@ class DependencyTests(unittest.TestCase):
         with self.assertRaisesRegex(dependencies.DependencyError, "unavailable"):
             dependencies.sync(self.root, self.lock_path, opener=unavailable)
 
+    def test_rejects_archive_missing_support_path(self):
+        archive = self.archive(include_support=False)
+        self.write_lock(archive)
+
+        with self.assertRaisesRegex(dependencies.DependencyError, "missing support paths"):
+            dependencies.sync(
+                self.root,
+                self.lock_path,
+                opener=lambda url, timeout: Response(archive),
+            )
+
     def test_detects_modified_installed_package(self):
         archive = self.archive()
         self.write_lock(archive)
@@ -120,7 +148,7 @@ class DependencyTests(unittest.TestCase):
             self.lock_path,
             opener=lambda url, timeout: Response(archive),
         )
-        (import_parent / "content_catalog/model.py").write_text(
+        (import_parent / "tools/content_catalog/model.py").write_text(
             "VALUE = 2\n", encoding="utf-8"
         )
 
@@ -135,7 +163,7 @@ class DependencyTests(unittest.TestCase):
             self.lock_path,
             opener=lambda url, timeout: Response(archive),
         )
-        bytecode = import_parent / "content_catalog/__pycache__/model.pyc"
+        bytecode = import_parent / "tools/content_catalog/__pycache__/model.pyc"
         bytecode.parent.mkdir()
         bytecode.write_bytes(b"generated")
 
@@ -202,7 +230,7 @@ class DependencyTests(unittest.TestCase):
             self.lock_path,
             opener=lambda url, timeout: Response(archive),
         )
-        metadata_path = import_parent / "content_catalog/.atrinik-dependency.json"
+        metadata_path = import_parent / ".atrinik-dependency.json"
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         metadata["unexpected"] = True
         metadata_path.write_text(json.dumps(metadata), encoding="utf-8")

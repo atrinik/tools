@@ -3,11 +3,19 @@
   "dependency": {
     "name": "content_catalog",
     "repository": "atrinik/content",
-    "tag": "v1.2.0",
-    "commit": "766cb6e67aa03dd86b1c333c607885df31c3aca5",
-    "url": "https://github.com/atrinik/content/releases/download/v1.2.0/atrinik-content-1.2.0.tar.gz",
-    "sha256": "c9ad1cfa555e2c9f23e7e814599ce67ea79a2779879787b6ad91f4a0c9e713f1",
-    "archive_prefix": "atrinik-content-1.2.0/tools/content_catalog",
+    "tag": "v1.0.0",
+    "commit": "63eb9bb5f02fb9104c2385d5e01c28c3df20b735",
+    "url": "https://github.com/atrinik/content/releases/download/v1.0.0/atrinik-content-1.0.0.tar.gz",
+    "sha256": "922cd119b3e0c71aab7d5f83eab538c120d537b584f12d039eced7ecf9b63924",
+    "archive_prefix": "atrinik-content-1.0.0/tools/content_catalog",
+    "support_paths": [
+      "schemas/authored-content-v1/field-metadata.json",
+      "schemas/authored-content-v1/source.json",
+      "tools/content_constraints.py",
+      "tools/content_contracts",
+      "tools/content_core",
+      "tools/syntax_evaluation"
+    ],
     "destination": ".dependencies/content_catalog"
   }
 }

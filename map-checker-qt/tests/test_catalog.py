@@ -107,12 +107,12 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual("catalog-validation", diagnostics[0]["code"])
 
     def test_import_replaces_an_unpinned_cached_module(self):
-        package = self.root / "content_catalog"
-        package.mkdir()
+        package = self.root / "tools/content_catalog"
+        package.mkdir(parents=True)
         (package / "__init__.py").write_text(
             "def load_catalog(root):\n    return root\n", encoding="utf-8"
         )
-        sys.modules["content_catalog"] = SimpleNamespace(
+        sys.modules["tools.content_catalog"] = SimpleNamespace(
             load_catalog=lambda root: "unpinned"
         )
         validator = CatalogValidator(self.root)
@@ -122,7 +122,9 @@ class CatalogTests(unittest.TestCase):
             self.assertNotEqual("unpinned", module.load_catalog(None))
             self.assertEqual(package / "__init__.py", Path(module.__file__).resolve())
         finally:
-            sys.modules.pop("content_catalog", None)
+            for name in tuple(sys.modules):
+                if name == "tools" or name.startswith("tools."):
+                    sys.modules.pop(name, None)
             while str(self.root) in sys.path:
                 sys.path.remove(str(self.root))
 
