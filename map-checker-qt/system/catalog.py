@@ -23,12 +23,12 @@ class CatalogValidator:
             sys.path.remove(import_parent_text)
         sys.path.insert(0, import_parent_text)
         for name in tuple(sys.modules):
-            if name == "content_catalog" or name.startswith("content_catalog."):
+            if name == "tools" or name.startswith("tools."):
                 del sys.modules[name]
         importlib.invalidate_caches()
-        module = importlib.import_module("content_catalog")
+        module = importlib.import_module("tools.content_catalog")
         module_path = Path(module.__file__).resolve()
-        expected_path = (import_parent / "content_catalog").resolve()
+        expected_path = (import_parent / "tools/content_catalog").resolve()
         try:
             module_path.relative_to(expected_path)
         except ValueError:

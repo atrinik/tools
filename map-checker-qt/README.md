@@ -20,11 +20,27 @@ python3 dependencies.py sync
 python3 dependencies.py verify
 ```
 
-The installer accepts only the `tools/content_catalog` Python package from the
-locked archive, rejects links, special files, duplicate paths, traversal, size
-limit violations, and digest mismatches, and installs into ignored
-`.dependencies/`. The checker refuses to scan if the dependency is absent,
-modified, or does not match the lock.
+The installer accepts only the `tools/content_catalog` Python package, its
+allowlisted released parser support modules, and the two schema inputs named by
+`support_paths` in the lock. All are extracted from the same digest-pinned
+archive; the catalog is imported as `tools.content_catalog` from the managed
+`.dependencies/content_catalog` root. It rejects links, special files,
+duplicate paths, traversal, size-limit violations, and digest mismatches, and
+installs into ignored `.dependencies/`. The checker refuses to scan if the
+dependency is absent, modified, or does not match the lock.
+
+The release preflight requires Python 3.8 or newer and uses only the standard
+library. It verifies the locked GitHub release is published, resolves the
+locked tag to the locked commit, finds the exact uploaded archive, and checks
+the locked download URL before focused tests run:
+
+```sh
+python3 release_preflight.py
+```
+
+Set `GITHUB_TOKEN` when running in automation to use the workflow's authenticated
+GitHub API quota. The preflight does not replace the archive SHA-256 and
+installed-package checks performed by `dependencies.py`.
 
 ## Headless validation
 
