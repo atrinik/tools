@@ -26,9 +26,30 @@ jobs:
           python3 -m unittest discover -s tests -v
           shellcheck split_symbols.sh
 
+      - name: Preflight Content catalog release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 map-checker-qt/release_preflight.py
+
+      - name: Read locked Content commit
+        id: catalog-lock
+        run: |
+          commit="$(python3 -c 'import json; from pathlib import Path; print(json.loads(Path("map-checker-qt/catalog.lock.json").read_text(encoding="utf-8"))["dependency"]["commit"])')"
+          echo "commit=${commit}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check out locked Content
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: atrinik/content
+          ref: ${{ steps.catalog-lock.outputs.commit }}
+          path: .content
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Validate map checker catalog integration
         run: |
           python3 -m unittest discover -s map-checker-qt/tests -v
           python3 map-checker-qt/dependencies.py validate
           python3 map-checker-qt/dependencies.py sync
           python3 map-checker-qt/dependencies.py verify
+          python3 map-checker-qt/map-checker.py --cli --catalog-only --content-root .content

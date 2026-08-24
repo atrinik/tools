@@ -26,6 +26,19 @@ limit violations, and digest mismatches, and installs into ignored
 `.dependencies/`. The checker refuses to scan if the dependency is absent,
 modified, or does not match the lock.
 
+The release preflight requires Python 3.8 or newer and uses only the standard
+library. It verifies the locked GitHub release is published, resolves the
+locked tag to the locked commit, finds the exact uploaded archive, and checks
+the locked download URL before focused tests run:
+
+```sh
+python3 release_preflight.py
+```
+
+Set `GITHUB_TOKEN` when running in automation to use the workflow's authenticated
+GitHub API quota. The preflight does not replace the archive SHA-256 and
+installed-package checks performed by `dependencies.py`.
+
 ## Headless validation
 
 Validate identities across a complete `atrinik/content` checkout without a
