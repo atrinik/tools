@@ -453,6 +453,17 @@ estimates, not guaranteed live measurements. A scan holds the supplied skill
 level constant; if a route grants more than one level, rerun the analyzer at
 the new level because the XP colors and cap will change during real play.
 
+## Release asset
+
+Each tools release attaches `atrinik-tools-farming-analyzer-<version>.tar.gz`
+and its `SHA256SUMS`, so a consumer such as the autonomous playtester can pin
+the analyzer by digest. The archive holds only `LICENSE` and `farming_analyzer/`
+under one `atrinik-tools-farming-analyzer-<version>/` directory. It is built by
+`scripts/release/package-farming-analyzer.sh` from the release tag with
+`git archive` and `gzip -n`, so the same tag always yields the same bytes. The
+analyzer stays standard-library only. Consumers supply `--content-root` and
+`--server-root` from their own pinned content and Classic server sources.
+
 ## Validation
 
 Run the focused regression suite from the repository root:
