@@ -4,6 +4,7 @@
   "plugins": [
     ["@semantic-release/commit-analyzer", {"preset": "conventionalcommits", "releaseRules": "./scripts/release/release-rules.cjs"}],
     ["@semantic-release/release-notes-generator", {"preset": "conventionalcommits"}],
-    ["@semantic-release/github", {"successComment": false, "failComment": false}]
+    ["@semantic-release/exec", {"publishCmd": "scripts/release/package-farming-analyzer.sh v${nextRelease.version} build/release"}],
+    ["@semantic-release/github", {"assets": [{"path": "build/release/*"}], "successComment": false, "failComment": false}]
   ]
 }

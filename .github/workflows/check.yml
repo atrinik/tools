@@ -24,7 +24,7 @@ jobs:
       - name: Validate diagnostic utilities
         run: |
           python3 -m unittest discover -s tests -v
-          shellcheck split_symbols.sh
+          shellcheck split_symbols.sh scripts/release/package-farming-analyzer.sh
 
       - name: Preflight Content catalog release
         env:
