@@ -1,19 +1,24 @@
 """Source-derived farming location analysis."""
 
+import heapq
 import math
+import posixpath
 import re
 from collections import Counter, defaultdict, deque
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 from .config import (
     CONSUMABLE_TYPES,
+    EXIT_TYPE,
     GEAR_TYPES,
     MONEY_TYPE,
     MONSTER_TYPE,
     PHYSICAL_ATTACKS,
     RANDOM_DROP_TYPE,
     ROOT,
+    SAVEBED_TYPE,
     SERVER_ATTACK_TYPES,
     SERVER_ROOT,
     SPAWN_POINT_MOB_TYPE,
@@ -46,6 +51,16 @@ from .sources import (
 from .treasure import Loot, TreasureModel
 
 
+@dataclass(frozen=True)
+class ApproachThreat:
+    """Danger of walking through one map on the way to a farming spot."""
+
+    pack_danger: float
+    spawn_danger: float
+    max_level: int
+    flags: tuple[str, ...]
+
+
 class FarmingAnalyzer:
     def __init__(self, root: Path = ROOT, server_root: Path = SERVER_ROOT):
         self.root = root
@@ -60,6 +75,10 @@ class FarmingAnalyzer:
         self.tick_seconds = self._constant("MAX_TIME", 125000) / 1_000_000.0
         self.default_reset = self._constant("MAP_DEFAULTRESET", 7200)
         self._world_graph = None
+        self._world_links: tuple[dict[str, tuple[str, ...]],
+                                 frozenset[str]] | None = None
+        self._threat_options: AnalysisOptions | None = None
+        self._threat_cache: dict[str, ApproachThreat] = {}
         self._npc_factions = self._load_npc_factions()
         self.rejections: list[tuple[str, str]] = []
 
@@ -317,7 +336,13 @@ class FarmingAnalyzer:
                     _integer(one(header["attrs"], "width")),
                     _integer(one(header["attrs"], "height")),
                 )
-                graph.nodes["/" + path.relative_to(self.map_root).as_posix()] = node
+                key = "/" + path.relative_to(self.map_root).as_posix()
+                graph.nodes[key] = node
+                for name, values in header["attrs"].items():
+                    if re.fullmatch(r"tile_path_\d+", name) and values:
+                        target = self._resolve_map_path(key, values[-1])
+                        if target is not None:
+                            node.exits.add(target)
                 for obj, parent in flatten(parsed["objects"]):
                     attrs = merged_attrs(obj, self.archetypes)
                     x = _integer(one(
@@ -331,12 +356,222 @@ class FarmingAnalyzer:
                     terrain = _integer(attrs.get("terrain_type"))
                     if terrain:
                         node.terrain[(x, y)] = node.terrain.get((x, y), 0) | terrain
+                    obj_type = _integer(attrs.get("type"))
+                    # Only exits placed on the map, not carried in an
+                    # inventory or spawn template, lead the player elsewhere.
+                    if parent is None and obj_type == EXIT_TYPE and attrs.get("slaying"):
+                        target = self._resolve_map_path(key, attrs["slaying"])
+                        if target is not None:
+                            node.exits.add(target)
+                    elif obj_type == SAVEBED_TYPE:
+                        node.savebed = True
                     # Doors, exits, and teleporters are traversable server-side.
                     if attrs.get("no_pass") == "1" and attrs.get("type") not in (
                             "20", "64", "66"):
                         node.blocked.add((x, y))
             self._world_graph = graph
         return self._world_graph
+
+    @staticmethod
+    def _resolve_map_path(source: str, target: str) -> str | None:
+        """Resolve an authored exit or tile path the way map paths nest."""
+        target = target.strip()
+        if not target:
+            return None
+        if not target.startswith("/"):
+            target = posixpath.join(posixpath.dirname(source), target)
+        return posixpath.normpath(target)
+
+    @staticmethod
+    def _seam_walkable(source: TerrainMap, target: TerrainMap,
+                       dx: int, dy: int) -> bool:
+        """Return whether any tile pair across a coordinate-map seam is walkable."""
+        if dx:
+            source_x = source.width - 1 if dx > 0 else 0
+            target_x = 0 if dx > 0 else target.width - 1
+            return any(
+                source.walkable(source_x, y) and target.walkable(target_x, y)
+                for y in range(min(source.height, target.height)))
+        source_y = source.height - 1 if dy > 0 else 0
+        target_y = 0 if dy > 0 else target.height - 1
+        return any(
+            source.walkable(x, source_y) and target.walkable(x, target_y)
+            for x in range(min(source.width, target.width)))
+
+    def _links(self) -> tuple[dict[str, tuple[str, ...]], frozenset[str]]:
+        """Return reverse map connectivity and the default approach origins.
+
+        A map links to another through an authored exit (``type 66`` with a
+        ``slaying`` destination), a header ``tile_path_N``, or a walkable seam
+        between cardinally adjacent coordinate maps at the same depth. The
+        returned mapping lists, for every map, the maps that lead into it.
+        Surface ``world_X_Y`` tiles and maps holding a savebed are origins.
+        """
+        if self._world_links is None:
+            graph = self._world()
+            predecessors: dict[str, set[str]] = defaultdict(set)
+            grid: dict[tuple[str, str, int, int, int], str] = {}
+            origins = set()
+            for key, node in graph.nodes.items():
+                for target in node.exits:
+                    if target in graph.nodes and target != key:
+                        predecessors[target].add(key)
+                coordinates = LocationIndex.world_coordinates(posixpath.basename(key))
+                if coordinates is not None:
+                    prefix, x, y, z = coordinates
+                    grid[(posixpath.dirname(key), prefix, x, y, z)] = key
+                    if prefix == "world" and z == 0:
+                        origins.add(key)
+                if node.savebed:
+                    origins.add(key)
+            for (parent, prefix, x, y, z), key in grid.items():
+                for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0)):
+                    other = grid.get((parent, prefix, x + dx, y + dy, z))
+                    if other is not None and self._seam_walkable(
+                            graph.nodes[key], graph.nodes[other], dx, dy):
+                        predecessors[other].add(key)
+            self._world_links = (
+                {key: tuple(sorted(values)) for key, values in predecessors.items()},
+                frozenset(origins),
+            )
+        return self._world_links
+
+    def _approach_threat(self, key: str, options: AnalysisOptions) -> ApproachThreat:
+        """Measure the worst aggressive encounter met while crossing one map.
+
+        Every hostile spawn point and directly placed monster is included,
+        whatever --include-static says, because a traveller meets them when
+        the map is loaded. Monster danger reuses the spot model, including the
+        character's AC and protections; passive monsters are not engaged.
+        """
+        if self._threat_options != options:
+            self._threat_options = options
+            self._threat_cache = {}
+        cached = self._threat_cache.get(key)
+        if cached is not None:
+            return cached
+        threat = ApproachThreat(0.0, 0.0, 0, ())
+        path = self.map_root / key.lstrip("/")
+        parsed = parse_blocks(path) if path.is_file() else {"header": None}
+        header = parsed.get("header")
+        if header is not None:
+            spawns, _competitors = self._collect_spawns(
+                parsed, options, include_static=True)
+            weights = [
+                sum(probability * profile.danger
+                    for probability, profile in spawn.candidates
+                    if "passive" not in profile.flags)
+                for spawn in spawns
+            ]
+            best_pack: list[int] = []
+            pack_danger = 0.0
+            for target in spawns:
+                pack = [
+                    index for index, spawn in enumerate(spawns)
+                    if weights[index] > 0.0 and
+                    max(abs(target.x - spawn.x), abs(target.y - spawn.y)) <=
+                    spawn.weighted("aggro_radius")
+                ]
+                danger = sum(weights[index] for index in pack)
+                if danger > pack_danger or not best_pack and pack:
+                    pack_danger = danger
+                    best_pack = pack
+            flag_counts: Counter[str] = Counter()
+            for index in best_pack:
+                for probability, profile in spawns[index].candidates:
+                    if "passive" in profile.flags:
+                        continue
+                    for flag in profile.flags:
+                        flag_counts[flag] += probability
+            levels = [
+                profile.level for index, spawn in enumerate(spawns)
+                if weights[index] > 0.0
+                for _probability, profile in spawn.candidates
+                if "passive" not in profile.flags
+            ]
+            threat = ApproachThreat(
+                pack_danger, max(weights, default=0.0), max(levels, default=0),
+                tuple(f"{flag}×{amount:g}" for flag, amount in sorted(
+                    flag_counts.items(), key=lambda item: (-item[1], item[0]))))
+        self._threat_cache[key] = threat
+        return threat
+
+    def _apply_approach(self, result: MapResult, options: AnalysisOptions) -> None:
+        """Find the least dangerous authored approach from an origin.
+
+        A bottleneck search walks backwards from the spot's maps and minimizes
+        the most dangerous intermediate map, then the number of maps, then the
+        path names for determinism. Origins themselves are not charged.
+        """
+        if not options.model_approach:
+            return
+        predecessors, default_origins = self._links()
+        origins = default_origins | {
+            "/" + origin.strip().removeprefix("maps/").lstrip("/")
+            for origin in options.approach_origins if origin.strip()
+        }
+        map_prefix = self.map_root.relative_to(self.root).as_posix()
+        members = {"/" + path.removeprefix(map_prefix + "/") for path in result.map_paths}
+        if members & origins:
+            result.approach_status = "origin"
+            return
+        use_packs = options.max_health > 0.0
+
+        def metric(key: str) -> float:
+            threat = self._approach_threat(key, options)
+            return threat.pack_danger if use_packs else threat.spawn_danger
+
+        heap: list[tuple[float, int, tuple[str, ...], str]] = [
+            (0.0, 0, (), member) for member in sorted(members)]
+        settled: set[str] = set()
+        found = None
+        while heap:
+            bottleneck, hops, path, node = heapq.heappop(heap)
+            if node in settled:
+                continue
+            settled.add(node)
+            if node in origins:
+                found = bottleneck, path, node
+                break
+            for previous in predecessors.get(node, ()):
+                if previous in members or previous in settled:
+                    continue
+                if previous in origins:
+                    heapq.heappush(heap, (bottleneck, hops, path, previous))
+                elif hops < options.max_approach_maps:
+                    heapq.heappush(heap, (
+                        max(bottleneck, metric(previous)), hops + 1,
+                        path + (previous,), previous))
+        if found is None:
+            result.approach_status = "unreachable"
+            return
+        bottleneck, path, origin = found
+        ordered = tuple(reversed(path))
+        result.approach_status = "path" if ordered else "origin"
+        result.approach_origin = map_prefix + origin
+        result.approach_maps = tuple(map_prefix + key for key in ordered)
+        result.approach_danger = bottleneck
+        survival_level = max(options.player_level, options.character_level)
+        flags: Counter[str] = Counter()
+        worst = None
+        for key in ordered:
+            threat = self._approach_threat(key, options)
+            if worst is None or metric(key) > metric(worst):
+                worst = key
+            for rendered in threat.flags:
+                label, _separator, amount = rendered.rpartition("×")
+                flags[label] += _number(amount, 1.0)
+        if worst is not None and metric(worst) > 0.0:
+            result.approach_worst_map = map_prefix + worst
+        level_flags = tuple(
+            f"{Path(key).name} L{self._approach_threat(key, options).max_level} > "
+            f"allowed L{survival_level + options.max_level_gap}"
+            for key in ordered
+            if self._approach_threat(key, options).max_level >
+            survival_level + options.max_level_gap)
+        result.approach_danger_flags = tuple(
+            f"{flag}×{amount:g}" for flag, amount in sorted(
+                flags.items(), key=lambda item: (-item[1], item[0]))) + level_flags
 
     def _maneuverability(
             self, relpath: str,
@@ -1003,13 +1238,11 @@ class FarmingAnalyzer:
             maximum = max(maximum, direct)
         return maximum
 
-    def analyze_map(self, path: Path, options: AnalysisOptions) -> MapResult | None:
-        relpath = str(path.relative_to(self.root))
-        parsed = parse_blocks(path)
-        header = parsed.get("header")
-        if header is None:
-            return None
-        header_attrs = header["attrs"]
+    def _collect_spawns(
+            self, parsed: dict, options: AnalysisOptions, *, include_static: bool,
+    ) -> tuple[list[SpawnProfile], list[CompetitorProfile]]:
+        """Return hostile spawn profiles and NPC competitors of a parsed map."""
+        header_attrs = parsed["header"]["attrs"]
         difficulty = _integer(one(header_attrs, "difficulty", 1), 1)
         reset_timeout = _integer(one(header_attrs, "reset_timeout", self.default_reset),
                                  self.default_reset)
@@ -1025,10 +1258,22 @@ class FarmingAnalyzer:
                 competitor = self._competitor_spawn(node, options)
                 if competitor is not None:
                     competitors.append(competitor)
-            elif options.include_static and parent is None and obj_type == MONSTER_TYPE:
+            elif include_static and parent is None and obj_type == MONSTER_TYPE:
                 spawn = self._static_monster(node, difficulty, reset_timeout, options)
                 if spawn is not None:
                     spawns.append(spawn)
+        return spawns, competitors
+
+    def analyze_map(self, path: Path, options: AnalysisOptions) -> MapResult | None:
+        relpath = str(path.relative_to(self.root))
+        parsed = parse_blocks(path)
+        header = parsed.get("header")
+        if header is None:
+            return None
+        header_attrs = header["attrs"]
+        difficulty = _integer(one(header_attrs, "difficulty", 1), 1)
+        spawns, competitors = self._collect_spawns(
+            parsed, options, include_static=options.include_static)
         if len(spawns) < options.minimum_spawns:
             self.rejections.append((relpath,
                                     f"{len(spawns)} spawns < minimum {options.minimum_spawns}"))
@@ -1463,6 +1708,16 @@ class FarmingAnalyzer:
             else:
                 safety = (min(1.0, safest / max(result.danger, 0.001))
                           if math.isfinite(result.danger) else 0.0)
+            result.spot_safety_score = safety
+            if result.approach_maps:
+                # Approach maps use the same health budget, or the same
+                # least-dangerous-spot reference, as the spot itself.
+                reference = (options.max_health if options.max_health > 0.0
+                             else safest)
+                result.approach_safety_score = (
+                    min(1.0, reference / max(result.approach_danger, 0.001))
+                    if math.isfinite(result.approach_danger) else 0.0)
+                safety = min(safety, result.approach_safety_score)
             result.safety_score = safety
             components = {
                 "xp": result.xp_hour / maxima["xp"],
@@ -1505,4 +1760,5 @@ class FarmingAnalyzer:
         for result in combined:
             result.location, result.nearby_landmarks = self.locations.describe(
                 result.map_paths, result.region, result.name)
+            self._apply_approach(result, options)
         return self._score(combined, options)

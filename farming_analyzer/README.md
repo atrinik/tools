@@ -234,6 +234,58 @@ attempt gate rather than an exponential renewal curve. Randomized spawn phases
 are averaged analytically, then readiness, partial-lap combat, mana use, and
 rest time are solved together.
 
+## Approach danger
+
+A spot is only as safe as the maps crossed to reach it. Before scoring, the
+analyzer builds a map graph from authored `type 66` exits (their `slaying`
+destination, resolved relative to the map like the server does), header
+`tile_path_N` links, and walkable seams between cardinally adjacent
+coordinate maps at the same depth. Origins are surface `world_X_Y` tiles
+(depth 0), every map holding a savebed (`type 106`), and each repeatable
+`--approach-origin MAP`, for example the character's current savebed map.
+The `--path` filter and `--exclude-region` do not hide approach maps.
+
+A bottleneck search walks backwards from the spot's maps to the nearest
+origin, minimizing the most dangerous map on the way, then the number of
+maps, then the map names, so the result is deterministic. It crosses at most
+`--max-approach-maps` maps (default 16). Origins and the spot's own maps are
+not charged. Each crossed map is charged for its worst aggressive encounter,
+reusing the spot's monster, damage and protection model: the summed `danger`
+of the aggressive spawns whose own detection radius reaches one pull point.
+Directly placed monsters count even without `--include-static`, because they
+are present when a traveller loads the map; passive monsters are skipped.
+Without `--max-health`, the worst single aggressive spawn is charged instead,
+matching the relative per-monster safety model. Each map's threat is cached
+for the current options.
+
+The approach safety uses the same reference as the spot: `max_health /
+approach_danger` with `--max-health`, otherwise the least dangerous eligible
+spot's danger divided by `approach_danger`, capped at one. The reported
+`safety_score`, and therefore the balanced score and `--ranking safety`, is
+the lower of the spot and approach safeties. Scripted teleports, keys, locked
+doors, and running past monsters are not modeled. `--ignore-approach`
+restores the spot-only score.
+
+Each result (`results`, `groups[].representative`, and `rankings`) adds these
+JSON fields; existing fields keep their names and types:
+
+- `spot_safety_score`: the spot-only safety previously reported as
+  `safety_score`;
+- `approach_status`: `path` (approach maps found), `origin` (a member map is
+  an origin or is entered straight from one), `unreachable` (no authored path
+  within the limit; safety is the spot's own), or `disabled`;
+- `approach_origin`: content-relative origin map, empty unless `path` or a
+  directly entered `origin`;
+- `approach_maps`: content-relative maps crossed, ordered from the origin
+  towards the spot;
+- `approach_danger`: the charged danger of the worst approach map;
+- `approach_safety_score`: 0 to 1, or 1 without approach maps;
+- `approach_worst_map`: the map that sets `approach_danger`;
+- `approach_danger_flags`: attack and behaviour flags of the monsters in each
+  approach map's worst encounter (for example `fire×3`), plus a
+  `MAP L<level> > allowed L<limit>` entry for any approach map whose monsters
+  exceed the `--max-level-gap` allowance.
+
 ## Profiles, rankings, diagnostics, and training
 
 Save validated character arguments and reuse them:
@@ -469,7 +521,7 @@ analyzer stays standard-library only. Consumers supply `--content-root` and
 Run the focused regression suite from the repository root:
 
 ```sh
-python3 -m unittest tools.test_farming_analyzer
+python3 -m unittest discover -s farming_analyzer/tests -t . -v
 ```
 
 The fixtures are current authored maps and server tables. Tests cover the
@@ -480,4 +532,6 @@ monsters, AoE clear-time and mana/crystal fight-rest cycles, Meditation's
 server-derived refill ramp, damage/delay DPS derivation, partially populated
 steady-state patrol laps, the deepest Old Outpost map, hierarchical region
 exclusions, depth-safe world-map circuits, the four-tile Strakewood swamp
-circuit, and the two-tile Forgotten Graveyard circuit.
+circuit, and the two-tile Forgotten Graveyard circuit. A synthetic world checks
+that a safe circuit behind a dangerous entry map loses safety and reports
+approach flags, while the same circuit behind a safe entry is unchanged.

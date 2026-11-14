@@ -5,6 +5,7 @@ import math
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 
 from .config import SERVER_ATTACK_TYPES
 from .experience import ExperienceModel
@@ -320,6 +321,21 @@ def render_text(results: list[MapResult], options: AnalysisOptions, limit: int,
             f"   danger: {', '.join(result.danger_flags) or 'ordinary melee'}; "
             f"sources: {', '.join(result.sources)}",
         ))
+        if result.approach_status == "path":
+            lines.append(
+                f"   approach: {len(result.approach_maps)} map(s) from "
+                f"{result.approach_origin} via "
+                f"{' -> '.join(Path(path).name for path in result.approach_maps)}; "
+                f"worst {Path(result.approach_worst_map).name or 'none'} "
+                f"(danger {result.approach_danger:.0f}, safety "
+                f"{result.approach_safety_score * 100.0:.0f}% vs spot "
+                f"{result.spot_safety_score * 100.0:.0f}%); "
+                f"{', '.join(result.approach_danger_flags) or 'ordinary melee'}"
+            )
+        elif result.approach_status == "unreachable":
+            lines.append(
+                "   approach: no authored exit path from a surface tile, savebed, "
+                "or --approach-origin; scored on the spot alone")
         if options.character_speed > 0.0:
             lines.append(
                 f"   route: ~{result.route_steps:,} authored walkable tile steps = "
@@ -374,7 +390,11 @@ def render_text(results: list[MapResult], options: AnalysisOptions, limit: int,
         "application. Crystal applications are treated as instant optimal inputs. The supplied "
         "skill level is held constant. Spawn-point respawn is "
         "source-derived; map-reset-only monsters require the map to unload and are excluded unless "
-        "--include-static is used.",
+        "--include-static is used. Safety is also capped by the least dangerous authored approach: "
+        "exits, tile paths, and walkable coordinate seams from a surface world tile, savebed map, or "
+        "--approach-origin, charging the worst aggressive pack on each map crossed (including "
+        "map-reset monsters). Scripted teleports, keys, locked doors, and fleeing past monsters are "
+        "not modeled; --ignore-approach scores the spot alone.",
     ))
     if warnings:
         lines.append(f"Treasure-model warnings: {len(warnings)} (use --json to inspect derived values).")

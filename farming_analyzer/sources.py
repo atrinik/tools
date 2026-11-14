@@ -170,6 +170,9 @@ class TerrainMap:
     height: int
     terrain: dict[tuple[int, int], int] = field(default_factory=dict)
     blocked: set[tuple[int, int]] = field(default_factory=set)
+    # Map-root paths ("/region/map") named by authored exits and tile paths.
+    exits: set[str] = field(default_factory=set)
+    savebed: bool = False
 
     def walkable(self, x: int, y: int) -> bool:
         return (
