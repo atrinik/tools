@@ -76,7 +76,7 @@ class FarmingAnalyzer:
         self.default_reset = self._constant("MAP_DEFAULTRESET", 7200)
         self._world_graph = None
         self._world_links: tuple[dict[str, tuple[str, ...]],
-                                 frozenset[str]] | None = None
+                                 frozenset[str], frozenset[str]] | None = None
         self._threat_options: AnalysisOptions | None = None
         self._threat_cache: dict[str, ApproachThreat] = {}
         self._npc_factions = self._load_npc_factions()
@@ -363,7 +363,7 @@ class FarmingAnalyzer:
                         target = self._resolve_map_path(key, attrs["slaying"])
                         if target is not None:
                             node.exits.add(target)
-                    elif obj_type == SAVEBED_TYPE:
+                    elif parent is None and obj_type == SAVEBED_TYPE:
                         node.savebed = True
                     # Doors, exits, and teleporters are traversable server-side.
                     if attrs.get("no_pass") == "1" and attrs.get("type") not in (
@@ -383,9 +383,39 @@ class FarmingAnalyzer:
         return posixpath.normpath(target)
 
     @staticmethod
+    def _tile_coordinates(basename: str) -> tuple[str, int, int, int] | None:
+        """Mirror derive_map_filename_tiles() in classic server/map.c.
+
+        Underscore-separated words longer than three characters are ignored
+        (old ``map_0101`` names); up to three numeric words, optionally
+        negative, are coordinates. Two or more make the map tiled, and the
+        server forms neighbour names by removing that many trailing
+        characters and appending the shifted coordinates.
+        """
+        coordinates: list[int] = []
+        length = 0
+        for word in basename.split("_"):
+            if not word or len(word) > 3:
+                continue
+            if re.fullmatch(r"-?\d+", word):
+                coordinates.append(int(word))
+                length += len(word) + 1
+                if len(coordinates) >= 3:
+                    break
+        if len(coordinates) < 2:
+            return None
+        z = coordinates[2] if len(coordinates) > 2 else 0
+        return basename[:max(0, len(basename) - length)], coordinates[0], coordinates[1], z
+
+    @staticmethod
     def _seam_walkable(source: TerrainMap, target: TerrainMap,
                        dx: int, dy: int) -> bool:
-        """Return whether any tile pair across a coordinate-map seam is walkable."""
+        """Return whether a tile pair across a tiled-map edge or corner is walkable."""
+        if dx and dy:
+            return (source.walkable(source.width - 1 if dx > 0 else 0,
+                                    source.height - 1 if dy > 0 else 0) and
+                    target.walkable(0 if dx > 0 else target.width - 1,
+                                    0 if dy > 0 else target.height - 1))
         if dx:
             source_x = source.width - 1 if dx > 0 else 0
             target_x = 0 if dx > 0 else target.width - 1
@@ -398,51 +428,94 @@ class FarmingAnalyzer:
             source.walkable(x, source_y) and target.walkable(x, target_y)
             for x in range(min(source.width, target.width)))
 
-    def _links(self) -> tuple[dict[str, tuple[str, ...]], frozenset[str]]:
-        """Return reverse map connectivity and the default approach origins.
+    def _links(self) -> tuple[dict[str, tuple[str, ...]], frozenset[str], frozenset[str]]:
+        """Return reverse map connectivity, surface origins, and savebed maps.
 
         A map links to another through an authored exit (``type 66`` with a
-        ``slaying`` destination), a header ``tile_path_N``, or a walkable seam
-        between cardinally adjacent coordinate maps at the same depth. The
-        returned mapping lists, for every map, the maps that lead into it.
-        Surface ``world_X_Y`` tiles and maps holding a savebed are origins.
+        ``slaying`` destination), a header ``tile_path_N``, or a walkable
+        edge or corner between maps the server tiles horizontally from their
+        coordinate names (same depth, all eight directions). Depth changes
+        only follow authored exits and tile paths. The returned mapping lists,
+        for every map, the maps that lead into it.
         """
         if self._world_links is None:
             graph = self._world()
             predecessors: dict[str, set[str]] = defaultdict(set)
-            grid: dict[tuple[str, str, int, int, int], str] = {}
-            origins = set()
+            surface = set()
+            savebeds = set()
             for key, node in graph.nodes.items():
                 for target in node.exits:
                     if target in graph.nodes and target != key:
                         predecessors[target].add(key)
-                coordinates = LocationIndex.world_coordinates(posixpath.basename(key))
-                if coordinates is not None:
-                    prefix, x, y, z = coordinates
-                    grid[(posixpath.dirname(key), prefix, x, y, z)] = key
-                    if prefix == "world" and z == 0:
-                        origins.add(key)
                 if node.savebed:
-                    origins.add(key)
-            for (parent, prefix, x, y, z), key in grid.items():
-                for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0)):
-                    other = grid.get((parent, prefix, x + dx, y + dy, z))
-                    if other is not None and self._seam_walkable(
-                            graph.nodes[key], graph.nodes[other], dx, dy):
+                    savebeds.add(key)
+                world = LocationIndex.world_coordinates(posixpath.basename(key))
+                if world is not None and world[0] == "world" and world[3] == 0:
+                    surface.add(key)
+                tiled = self._tile_coordinates(posixpath.basename(key))
+                if tiled is None:
+                    continue
+                prefix, x, y, z = tiled
+                parent = posixpath.dirname(key)
+                for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0),
+                               (1, -1), (1, 1), (-1, 1), (-1, -1)):
+                    name = f"{prefix}_{x + dx}_{y + dy}" + (f"_{z}" if z else "")
+                    other = posixpath.join(parent, name)
+                    if other != key and other in graph.nodes and self._seam_walkable(
+                            node, graph.nodes[other], dx, dy):
                         predecessors[other].add(key)
             self._world_links = (
                 {key: tuple(sorted(values)) for key, values in predecessors.items()},
-                frozenset(origins),
+                frozenset(surface),
+                frozenset(savebeds),
             )
         return self._world_links
+
+    def resolve_map_key(self, path: str) -> str | None:
+        """Resolve a user-supplied map path to an authored map, or None.
+
+        Accepts map-root paths (``/region/map``), content-relative paths
+        (``maps/region/map``), and either form with a leading slash.
+        """
+        text = path.strip().lstrip("/")
+        if not text:
+            return None
+        nodes = self._world().nodes
+        for candidate in (text, text.removeprefix("maps/")):
+            key = posixpath.normpath("/" + candidate)
+            if key in nodes:
+                return key
+        return None
+
+    @staticmethod
+    def _sequential_exposure(fighters: list[tuple[float, float, float]]) -> float:
+        """Expected damage while killing an engaged pack one at a time.
+
+        Each fighter is (incoming DPS, kill seconds, secondary-risk bonus).
+        Every living monster keeps attacking until it dies, so a monster's DPS
+        is charged for the time until its own kill. Killing in ascending
+        kill-seconds/DPS order (Smith's rule) minimizes that total.
+        """
+        total = 0.0
+        elapsed = 0.0
+        damaging = sorted(
+            (item for item in fighters if item[0] > 0.0),
+            key=lambda item: item[1] / item[0])
+        for dps, kill_seconds, bonus in damaging:
+            elapsed += kill_seconds
+            total += dps * elapsed + bonus
+        total += sum(bonus for dps, _kill, bonus in fighters if dps <= 0.0)
+        return total
 
     def _approach_threat(self, key: str, options: AnalysisOptions) -> ApproachThreat:
         """Measure the worst aggressive encounter met while crossing one map.
 
         Every hostile spawn point and directly placed monster is included,
         whatever --include-static says, because a traveller meets them when
-        the map is loaded. Monster danger reuses the spot model, including the
-        character's AC and protections; passive monsters are not engaged.
+        the map is loaded. Monster damage, hit chance and kill time reuse the
+        spot model, including the character's AC and protections; passive
+        monsters are not engaged. Spawns whose own detection radius reaches
+        one pull point fight together, charged by sequential exposure.
         """
         if self._threat_options != options:
             self._threat_options = options
@@ -453,16 +526,29 @@ class FarmingAnalyzer:
         threat = ApproachThreat(0.0, 0.0, 0, ())
         path = self.map_root / key.lstrip("/")
         parsed = parse_blocks(path) if path.is_file() else {"header": None}
-        header = parsed.get("header")
-        if header is not None:
+        if parsed.get("header") is not None:
             spawns, _competitors = self._collect_spawns(
                 parsed, options, include_static=True)
-            weights = [
-                sum(probability * profile.danger
-                    for probability, profile in spawn.candidates
-                    if "passive" not in profile.flags)
-                for spawn in spawns
-            ]
+            fighters: list[tuple[float, float, float]] = []
+            weights: list[float] = []
+            for spawn in spawns:
+                active = [(probability, profile)
+                          for probability, profile in spawn.candidates
+                          if "passive" not in profile.flags]
+                weights.append(sum(probability * profile.danger
+                                   for probability, profile in active))
+                dps = sum(probability * profile.damage_second
+                          for probability, profile in active)
+                kill = sum(probability * profile.kill_seconds
+                           for probability, profile in active)
+                # An unkillable monster with a damaging attack never stops.
+                bonus = sum(
+                    probability * (profile.danger - profile.damage_taken)
+                    for probability, profile in active
+                    if math.isfinite(profile.damage_taken))
+                if not math.isfinite(kill) and dps > 0.0:
+                    bonus = math.inf
+                fighters.append((dps, kill if math.isfinite(kill) else 0.0, bonus))
             best_pack: list[int] = []
             pack_danger = 0.0
             for target in spawns:
@@ -472,7 +558,7 @@ class FarmingAnalyzer:
                     max(abs(target.x - spawn.x), abs(target.y - spawn.y)) <=
                     spawn.weighted("aggro_radius")
                 ]
-                danger = sum(weights[index] for index in pack)
+                danger = self._sequential_exposure([fighters[i] for i in pack])
                 if danger > pack_danger or not best_pack and pack:
                     pack_danger = danger
                     best_pack = pack
@@ -500,16 +586,21 @@ class FarmingAnalyzer:
         """Find the least dangerous authored approach from an origin.
 
         A bottleneck search walks backwards from the spot's maps and minimizes
-        the most dangerous intermediate map, then the number of maps, then the
-        path names for determinism. Origins themselves are not charged.
+        the most dangerous map crossed, then the number of maps, then the path
+        names for determinism. A savebed or --approach-origin map is where the
+        character starts and is free; a surface tile is charged its own
+        danger because the character must cross it to use its entrance.
         """
         if not options.model_approach:
             return
-        predecessors, default_origins = self._links()
-        origins = default_origins | {
-            "/" + origin.strip().removeprefix("maps/").lstrip("/")
-            for origin in options.approach_origins if origin.strip()
+        predecessors, surface, savebeds = self._links()
+        explicit = {
+            key for key in map(self.resolve_map_key, options.approach_origins)
+            if key is not None
         }
+        free = explicit if options.approach_origins_only else savebeds | explicit
+        charged = frozenset() if options.approach_origins_only else surface - free
+        origins = free | charged
         map_prefix = self.map_root.relative_to(self.root).as_posix()
         members = {"/" + path.removeprefix(map_prefix + "/") for path in result.map_paths}
         if members & origins:
@@ -523,38 +614,43 @@ class FarmingAnalyzer:
 
         heap: list[tuple[float, int, tuple[str, ...], str]] = [
             (0.0, 0, (), member) for member in sorted(members)]
-        settled: set[str] = set()
+        # A map popped again with fewer hops may still reach an origin within
+        # the limit, so prune by hops rather than settling maps once.
+        best_hops: dict[str, int] = {}
         found = None
         while heap:
             bottleneck, hops, path, node = heapq.heappop(heap)
-            if node in settled:
-                continue
-            settled.add(node)
             if node in origins:
                 found = bottleneck, path, node
                 break
+            if hops >= best_hops.get(node, math.inf):
+                continue
+            best_hops[node] = hops
             for previous in predecessors.get(node, ()):
-                if previous in members or previous in settled:
+                if previous in members or previous in path:
                     continue
                 if previous in origins:
-                    heapq.heappush(heap, (bottleneck, hops, path, previous))
+                    cost = metric(previous) if previous in charged else 0.0
+                    heapq.heappush(heap, (max(bottleneck, cost), hops, path, previous))
                 elif hops < options.max_approach_maps:
                     heapq.heappush(heap, (
                         max(bottleneck, metric(previous)), hops + 1,
                         path + (previous,), previous))
         if found is None:
             result.approach_status = "unreachable"
+            result.approach_danger_flags = ("approach_unknown",)
             return
         bottleneck, path, origin = found
         ordered = tuple(reversed(path))
-        result.approach_status = "path" if ordered else "origin"
+        charged_maps = ((origin,) if origin in charged else ()) + ordered
+        result.approach_status = "path"
         result.approach_origin = map_prefix + origin
         result.approach_maps = tuple(map_prefix + key for key in ordered)
         result.approach_danger = bottleneck
         survival_level = max(options.player_level, options.character_level)
         flags: Counter[str] = Counter()
         worst = None
-        for key in ordered:
+        for key in charged_maps:
             threat = self._approach_threat(key, options)
             if worst is None or metric(key) > metric(worst):
                 worst = key
@@ -566,7 +662,7 @@ class FarmingAnalyzer:
         level_flags = tuple(
             f"{Path(key).name} L{self._approach_threat(key, options).max_level} > "
             f"allowed L{survival_level + options.max_level_gap}"
-            for key in ordered
+            for key in charged_maps
             if self._approach_threat(key, options).max_level >
             survival_level + options.max_level_gap)
         result.approach_danger_flags = tuple(
@@ -1709,7 +1805,7 @@ class FarmingAnalyzer:
                 safety = (min(1.0, safest / max(result.danger, 0.001))
                           if math.isfinite(result.danger) else 0.0)
             result.spot_safety_score = safety
-            if result.approach_maps:
+            if result.approach_status == "path":
                 # Approach maps use the same health budget, or the same
                 # least-dangerous-spot reference, as the spot itself.
                 reference = (options.max_health if options.max_health > 0.0
@@ -1717,6 +1813,10 @@ class FarmingAnalyzer:
                 result.approach_safety_score = (
                     min(1.0, reference / max(result.approach_danger, 0.001))
                     if math.isfinite(result.approach_danger) else 0.0)
+                safety = min(safety, result.approach_safety_score)
+            elif (result.approach_status == "unreachable" and
+                  options.unreachable_approach_safety is not None):
+                result.approach_safety_score = options.unreachable_approach_safety
                 safety = min(safety, result.approach_safety_score)
             result.safety_score = safety
             components = {

@@ -237,54 +237,86 @@ rest time are solved together.
 ## Approach danger
 
 A spot is only as safe as the maps crossed to reach it. Before scoring, the
-analyzer builds a map graph from authored `type 66` exits (their `slaying`
-destination, resolved relative to the map like the server does), header
-`tile_path_N` links, and walkable seams between cardinally adjacent
-coordinate maps at the same depth. Origins are surface `world_X_Y` tiles
-(depth 0), every map holding a savebed (`type 106`), and each repeatable
-`--approach-origin MAP`, for example the character's current savebed map.
-The `--path` filter and `--exclude-region` do not hide approach maps.
+analyzer builds a map graph from:
 
-A bottleneck search walks backwards from the spot's maps to the nearest
-origin, minimizing the most dangerous map on the way, then the number of
-maps, then the map names, so the result is deterministic. It crosses at most
-`--max-approach-maps` maps (default 16). Origins and the spot's own maps are
-not charged. Each crossed map is charged for its worst aggressive encounter,
-reusing the spot's monster, damage and protection model: the summed `danger`
-of the aggressive spawns whose own detection radius reaches one pull point.
-Directly placed monsters count even without `--include-static`, because they
-are present when a traveller loads the map; passive monsters are skipped.
-Without `--max-health`, the worst single aggressive spawn is charged instead,
-matching the relative per-monster safety model. Each map's threat is cached
-for the current options.
+- authored `type 66` exits placed directly on a map (not ones carried in a
+  spawn point or container), following their `slaying` destination relative
+  to the map, or from the map root when it starts with `/`;
+- header `tile_path_N` links;
+- horizontal tiling derived from map names as `derive_map_filename_tiles()`
+  in classic `server/src/server/map.c` does: any basename with two or three
+  numeric words of at most three characters (`cave_2_1_-1`) tiles with the
+  eight same-depth neighbours whose derived names exist, when a tile on each
+  side of the shared edge or corner is walkable.
+
+This approximates the server's tiling. Explicit tile paths do not replace the
+derived neighbour in that direction, and the server's derived up/down tiles
+are not linked: depth changes only follow authored exits and tile paths.
+Missing destinations are ignored.
+
+Origins are surface `world_X_Y` tiles (depth 0) and every map holding a
+placed savebed (`type 106`), plus each repeatable `--approach-origin MAP`.
+`MAP` may be written `/region/map`, `region/map`, or `maps/region/map`; an
+unknown map is an error. `--approach-origins-only` uses only the
+`--approach-origin` maps, for example "I start from my savebed". A savebed or
+explicit origin is where the character starts and is free. A surface tile is
+charged its own danger, because the character must cross it to use its
+entrance. The `--path` filter and `--exclude-region` do not hide approach
+maps.
+
+A bottleneck search walks backwards from the spot's maps to an origin,
+minimizing the most dangerous map crossed, then the number of maps, then the
+map names, so the result is deterministic. It crosses at most
+`--max-approach-maps` maps between origin and spot (default 16). A map is
+expanded again when reached with fewer maps, so a long safe path cannot block
+a shorter one that fits the limit.
+
+Each crossed map is charged for its worst aggressive encounter, reusing the
+spot's monster, damage, hit-chance, kill-time and protection model. Spawns
+whose own detection radius reaches one pull point fight together. That pack
+is charged by sequential exposure: every living monster keeps attacking until
+it dies, killed in the order that minimizes damage (ascending kill time per
+incoming DPS), plus each monster's secondary-risk bonus. Without
+`--max-health`, the worst single aggressive spawn is charged instead,
+matching the relative per-monster safety model. Directly placed monsters
+count even without `--include-static`, because they are present when a
+traveller loads the map. Passive monsters are skipped. AoE is not credited
+on the approach. Each map's threat is cached for the current options.
 
 The approach safety uses the same reference as the spot: `max_health /
 approach_danger` with `--max-health`, otherwise the least dangerous eligible
 spot's danger divided by `approach_danger`, capped at one. The reported
 `safety_score`, and therefore the balanced score and `--ranking safety`, is
-the lower of the spot and approach safeties. Scripted teleports, keys, locked
-doors, and running past monsters are not modeled. `--ignore-approach`
-restores the spot-only score.
+the lower of the spot and approach safeties. A spot with no authored path
+from an origin within the limit keeps its own safety and gets the
+`approach_unknown` flag; `--unreachable-approach-safety SAFETY` (0 to 1)
+caps such spots instead. Scripted teleports, keys, locked doors, and running
+past monsters are not modeled. Neither is the variance of a fight, nor the
+server's poisoning pulses (`attack_perform_poison()`: five to ten pulses of
+up to a third of maximum HP) beyond the secondary-risk heuristic, so a pack
+whose expected damage is just inside one health bar still reports full
+safety. `--ignore-approach` restores the spot-only score.
 
 Each result (`results`, `groups[].representative`, and `rankings`) adds these
 JSON fields; existing fields keep their names and types:
 
 - `spot_safety_score`: the spot-only safety previously reported as
   `safety_score`;
-- `approach_status`: `path` (approach maps found), `origin` (a member map is
-  an origin or is entered straight from one), `unreachable` (no authored path
-  within the limit; safety is the spot's own), or `disabled`;
-- `approach_origin`: content-relative origin map, empty unless `path` or a
-  directly entered `origin`;
+- `approach_status`: `path` (an origin was found; `approach_maps` may be
+  empty when a charged surface tile leads straight in), `origin` (a member
+  map is itself an origin), `unreachable`, or `disabled`;
+- `approach_origin`: content-relative origin map, empty unless `path`;
 - `approach_maps`: content-relative maps crossed, ordered from the origin
-  towards the spot;
-- `approach_danger`: the charged danger of the worst approach map;
-- `approach_safety_score`: 0 to 1, or 1 without approach maps;
+  towards the spot, excluding the origin;
+- `approach_danger`: the charged danger of the worst approach map, including
+  a charged surface origin;
+- `approach_safety_score`: 0 to 1; 1 without a charged approach, or the
+  `--unreachable-approach-safety` cap;
 - `approach_worst_map`: the map that sets `approach_danger`;
 - `approach_danger_flags`: attack and behaviour flags of the monsters in each
-  approach map's worst encounter (for example `fire×3`), plus a
-  `MAP L<level> > allowed L<limit>` entry for any approach map whose monsters
-  exceed the `--max-level-gap` allowance.
+  charged map's worst encounter (for example `fire×3`), a
+  `MAP L<level> > allowed L<limit>` entry for any charged map whose monsters
+  exceed the `--max-level-gap` allowance, or `approach_unknown`.
 
 ## Profiles, rankings, diagnostics, and training
 
@@ -534,4 +566,7 @@ steady-state patrol laps, the deepest Old Outpost map, hierarchical region
 exclusions, depth-safe world-map circuits, the four-tile Strakewood swamp
 circuit, and the two-tile Forgotten Graveyard circuit. A synthetic world checks
 that a safe circuit behind a dangerous entry map loses safety and reports
-approach flags, while the same circuit behind a safe entry is unchanged.
+approach flags, while the same circuit behind a safe entry is unchanged, and
+covers exits, tile paths, tiling, origins, and the bounded search. When the
+content checkout is present, a Sera-like level 36 profile checks the
+Underground City entrance's slime cluster.

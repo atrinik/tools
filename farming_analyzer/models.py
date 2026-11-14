@@ -201,6 +201,8 @@ class AnalysisOptions:
     model_approach: bool = True
     approach_origins: tuple[str, ...] = ()
     max_approach_maps: int = 16
+    approach_origins_only: bool = False
+    unreachable_approach_safety: float | None = None
 
     @property
     def simulate_melee(self) -> bool:
