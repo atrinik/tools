@@ -140,6 +140,17 @@ class MapResult:
     pack_target_capacity: float = 1.0
     min_monster_level: int = 0
     avg_monster_level: float = 0.0
+    # Approach: the least dangerous authored path from an origin (surface
+    # world tile, savebed map, or --approach-origin) to the spot's maps.
+    spot_safety_score: float = 0.0
+    approach_status: str = "disabled"
+    approach_origin: str = ""
+    approach_maps: tuple[str, ...] = ()
+    approach_danger: float = 0.0
+    approach_safety_score: float = 1.0
+    approach_worst_map: str = ""
+    approach_danger_flags: tuple[str, ...] = ()
+    approach_unknown: bool = False
 
 
 @dataclass(frozen=True)
@@ -188,6 +199,11 @@ class AnalysisOptions:
     passive_pull_efficiency: float = 0.20
     group_results: bool = True
     group_level_span: int = 10
+    model_approach: bool = True
+    approach_origins: tuple[str, ...] = ()
+    max_approach_maps: int = 16
+    approach_origins_only: bool = False
+    unreachable_approach_safety: float | None = None
 
     @property
     def simulate_melee(self) -> bool:

@@ -234,6 +234,118 @@ attempt gate rather than an exponential renewal curve. Randomized spawn phases
 are averaged analytically, then readiness, partial-lap combat, mana use, and
 rest time are solved together.
 
+## Approach danger
+
+A spot is only as safe as the maps crossed to reach it. The approach search
+runs over walkable components rather than whole maps: each map's walkable
+tiles are split into 8-neighbour connected components, computed lazily for
+the maps the search reaches and cached. A character can move:
+
+- through a placed `type 66` exit (not one carried in a spawn point or
+  container) from its own tile, or from an adjacent walkable tile when the
+  exit tile is blocked. It lands at the exit's `hp`/`sp`, at the target's
+  `enter_x`/`enter_y` when those are out of range (such as `-1`), or on an
+  adjacent free tile when the landing tile is blocked, as
+  `object_enter_map()` does. `slaying` resolves relative to the map, or from
+  the map root when it starts with `/`. Stairs without `slaying` use
+  `last_heal` (9 up, 10 down, or a horizontal direction) to pick the tiled
+  map and keep their own position; an exit without `slaying` but with
+  `hp`/`sp` moves within its own map. An auto-linked exit (no path, `hp`/`sp`
+  of -1, non-zero `sub_type`) may lead to any exit of the same `sub_type`
+  within five tiles, including on tiled neighbours, as `exit_find()` does.
+  Scripts, keys and locks are not followed; doors count as open;
+- across a tiled map edge or corner from an edge tile to the walkable tile
+  beyond it. Tiling follows `derive_map_filename_tiles()` in classic
+  `server/src/server/map.c`: header `tile_path_N` (direction `N - 1`) wins,
+  otherwise any basename with two or three numeric words of at most three
+  characters (`cave_2_1_-1`) derives its neighbours' names when those maps
+  exist. Only the eight same-depth directions are walked; up/down tiles are
+  used only by stairs, not as seams.
+
+Origins are components:
+
+- each placed savebed's component (free);
+- every walkable component of each `--approach-origin MAP` (free). `MAP` may
+  be written `/region/map`, `region/map`, or `maps/region/map`; an unknown
+  map is an error. `--approach-origins-only` uses only these, for example
+  "I start from my savebed";
+- town-connected surface components (charged). Surface components (depth-0
+  `world_X_Y` tiles) are grouped once, with union-find over seams between
+  surface tiles in either direction. A group is town-connected when one of its components holds a
+  savebed or is joined by an exit to or from a savebed map, such as an inn
+  door. Islets, ship-only islands, and surface pockets entered only from
+  below are therefore not origins. A charged surface origin costs its map's
+  own danger, because the character must cross it to use its entrance.
+
+The `--path` filter and `--exclude-region` do not hide approach maps.
+
+A bottleneck search walks backwards from the components holding the spot's
+spawns to an origin, minimizing the most dangerous map crossed, then the
+number of components crossed, then their names, so the result is
+deterministic. It crosses at most `--max-approach-maps` components between
+origin and spot (default 16). A component is expanded again when reached
+with fewer crossings, so a long safe path cannot block a shorter one that
+fits the limit. Other components of the spot's own maps are free and are not
+listed, because the spot's safety already covers them.
+
+Each crossed component is charged for its map's worst aggressive encounter
+among the spawns standing in that component or whose own detection radius
+reaches one of its tiles by Chebyshev distance, so casters, archers, flyers
+and swimmers behind rock, tree or water lines still count, reusing the
+spot's monster, damage, hit-chance, kill-time and protection model. Spawns
+whose own detection radius reaches one pull point fight together. That pack
+is charged by sequential exposure: every living monster keeps attacking until
+it dies, killed in the order that minimizes damage (ascending kill time per
+incoming DPS), plus each monster's secondary-risk bonus. A spawn that is
+aggressive with probability `p` is charged `p` times its conditional damage
+and adds `p` times its kill time to the monsters after it. For `n` identical
+monsters this charges `n(n + 1)/2` kills' worth of exposure, about
+`(n + 1)/2` times the farming model's `n` (danger times pack size). That is
+deliberate: a farmer chooses pulls and fights one monster at a time, while a
+traveller crossing the map meets the whole pack at once and every monster
+still alive keeps hitting. Without `--max-health`, the worst single
+aggressive spawn is charged instead, matching the relative per-monster
+safety model. Directly placed monsters count even without
+`--include-static`, because they are present when a traveller loads the
+map. Passive monsters are skipped. AoE is not credited on the approach.
+Threats are cached per map and component for the current options.
+
+The approach safety uses the same reference as the spot: `max_health /
+approach_danger` with `--max-health`, otherwise the least dangerous eligible
+spot's danger divided by `approach_danger`, capped at one. The reported
+`safety_score`, and therefore the balanced score and `--ranking safety`, is
+the lower of the spot and approach safeties. A spot with no path from an
+origin within the limit keeps its own safety and sets `approach_unknown`;
+`--unreachable-approach-safety SAFETY` (0 to 1) caps such spots instead.
+Running past monsters, fight variance, and the server's poisoning pulses
+(`attack_perform_poison()`: five to ten pulses of up to a third of maximum
+HP) beyond the secondary-risk heuristic are not modeled, so a pack whose
+expected damage is just inside one health bar still reports full safety.
+`--ignore-approach` restores the spot-only score.
+
+Each result (`results`, `groups[].representative`, and `rankings`) adds these
+JSON fields; existing fields keep their names and types:
+
+- `spot_safety_score`: the spot-only safety previously reported as
+  `safety_score`;
+- `approach_status`: `path` (an origin was found), `origin` (a spawn's
+  component is itself an origin), `unreachable`, or `disabled`. `path` can
+  come with an empty `approach_maps` when a charged surface origin leads
+  straight into the spot; `approach_danger` is then that origin's danger;
+- `approach_unknown`: true exactly when `approach_status` is `unreachable`;
+- `approach_origin`: content-relative origin map, empty unless `path`;
+- `approach_maps`: content-relative maps crossed, ordered from the origin
+  towards the spot, excluding the origin and the spot's own maps;
+- `approach_danger`: the charged danger of the worst approach map, including
+  a charged surface origin;
+- `approach_safety_score`: 0 to 1; 1 without a charged approach, or the
+  `--unreachable-approach-safety` cap;
+- `approach_worst_map`: the map that sets `approach_danger`;
+- `approach_danger_flags`: attack and behaviour flags of the monsters in each
+  charged map's worst encounter, summed over those maps (for example
+  `fire×3`), plus a `MAP L<level> > allowed L<limit>` entry for any charged
+  map whose monsters exceed the `--max-level-gap` allowance.
+
 ## Profiles, rankings, diagnostics, and training
 
 Save validated character arguments and reuse them:
@@ -469,7 +581,7 @@ analyzer stays standard-library only. Consumers supply `--content-root` and
 Run the focused regression suite from the repository root:
 
 ```sh
-python3 -m unittest tools.test_farming_analyzer
+python3 -m unittest discover -s farming_analyzer/tests -t . -v
 ```
 
 The fixtures are current authored maps and server tables. Tests cover the
@@ -480,4 +592,11 @@ monsters, AoE clear-time and mana/crystal fight-rest cycles, Meditation's
 server-derived refill ramp, damage/delay DPS derivation, partially populated
 steady-state patrol laps, the deepest Old Outpost map, hierarchical region
 exclusions, depth-safe world-map circuits, the four-tile Strakewood swamp
-circuit, and the two-tile Forgotten Graveyard circuit.
+circuit, and the two-tile Forgotten Graveyard circuit. A synthetic world checks
+that a safe circuit behind a dangerous entry map loses safety and reports
+approach flags, while the same circuit behind a safe entry is unchanged, and
+covers exits, tile paths, tiling, origins, and the bounded search. When the
+content checkout is present, `UndergroundCityEntranceTest` checks a
+Sera-like level 36 profile against the Underground City entrance's slime
+cluster and approach routes. It is skipped without that checkout, so CI,
+which checks out only this repository, does not run it.

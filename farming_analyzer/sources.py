@@ -170,6 +170,14 @@ class TerrainMap:
     height: int
     terrain: dict[tuple[int, int], int] = field(default_factory=dict)
     blocked: set[tuple[int, int]] = field(default_factory=set)
+    # Placed exits as (x, y, destination map-root path or None, hp, sp,
+    # last_heal, sub_type); header tile_path_N links by server direction
+    # index N - 1; the header entry point; and placed savebed positions.
+    exits: list[tuple[int, int, str | None, int, int, int, int]] = field(
+        default_factory=list)
+    tile_paths: dict[int, str] = field(default_factory=dict)
+    enter: tuple[int, int] = (0, 0)
+    savebeds: list[tuple[int, int]] = field(default_factory=list)
 
     def walkable(self, x: int, y: int) -> bool:
         return (

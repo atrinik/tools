@@ -119,6 +119,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--path", dest="path_pattern", help="case-insensitive map-path regex")
     parser.add_argument("--exclude-region", action="append", default=[], metavar="NAME",
                         help="exclude a region/island ID or name; may be repeated")
+    parser.add_argument("--approach-origin", action="append", default=[], metavar="MAP",
+                        help="extra map the character starts from, such as its savebed map; any of "
+                             "its walkable parts counts; may be repeated (savebeds and town-connected "
+                             "surface tiles are also origins unless --approach-origins-only)")
+    parser.add_argument("--max-approach-maps", type=int, default=16,
+                        help="longest approach, in walkable map components between origin "
+                             "and spot (default: 16)")
+    parser.add_argument("--approach-origins-only", action="store_true",
+                        help="use only --approach-origin maps as origins, not surface tiles or savebeds")
+    parser.add_argument("--unreachable-approach-safety", type=float, metavar="SAFETY",
+                        help="cap safety (0..1) of spots with no authored approach; default: no cap")
+    parser.add_argument("--ignore-approach", dest="model_approach", action="store_false",
+                        help="score only the spot's own maps, not the maps crossed to reach it")
     parser.add_argument("--include-static", action="store_true",
                         help="include monsters that only return after map reset/unload")
     parser.add_argument("--json", action="store_true", help="emit machine-readable results")
@@ -254,6 +267,18 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("passive-pull-efficiency must be between 0 and 1")
     if not (1 <= args.circuit_size <= 8):
         raise SystemExit("circuit-size must be between 1 and 8")
+    if not (1 <= args.max_approach_maps <= 64):
+        raise SystemExit("max-approach-maps must be between 1 and 64")
+    if (args.unreachable_approach_safety is not None and
+            not (0.0 <= args.unreachable_approach_safety <= 1.0)):
+        raise SystemExit("unreachable-approach-safety must be between 0 and 1")
+    if args.approach_origins_only and not args.approach_origin:
+        raise SystemExit("--approach-origins-only requires at least one --approach-origin")
+    unknown_origins = [
+        origin for origin in args.approach_origin
+        if analyzer.resolve_map_key(origin) is None]
+    if unknown_origins:
+        raise SystemExit("unknown approach origin map: " + ", ".join(unknown_origins))
     if not (1 <= args.group_level_span <= 50):
         raise SystemExit("group-level-span must be between 1 and 50")
     if not (1 <= character_level <= maximum_level):
@@ -304,6 +329,11 @@ def main(argv: list[str] | None = None) -> int:
         args.passive_pull_efficiency,
         args.group_results,
         args.group_level_span,
+        model_approach=args.model_approach,
+        approach_origins=tuple(args.approach_origin),
+        max_approach_maps=args.max_approach_maps,
+        approach_origins_only=args.approach_origins_only,
+        unreachable_approach_safety=args.unreachable_approach_safety,
     )
     results = analyzer.scan(options)
     initial_rejections = list(analyzer.rejections)
