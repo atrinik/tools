@@ -68,6 +68,21 @@ attack_fire 50
 attack_acid 50
 exp 2000
 end
+Object caster
+name dragon caster
+type 80
+monster 1
+level 40
+maxhp 30
+dam 20
+wc 30
+ac 10
+speed 0.5
+weapon_speed 1
+item_power 3
+can_cast_spell 1
+exp 2000
+end
 """
 
 SIZE = 6
@@ -353,8 +368,18 @@ class ApproachGraphTest(unittest.TestCase):
         write("t/beyond")
         write("t/pair_0_0", extra=paired(5, 2, 3))
         write("t/pair_1_0", extra=paired(1, 2, 3) + paired(2, 2, 4))
-        # Only the half a traveller stands in is charged.
-        write("t/halves", wall_x=3, spawns=(("pudding", 5, 1), ("pudding", 5, 2)))
+        # Walk-blocking lines at x=1 and x=10 split t/wide into three parts.
+        # A caster at (3, 2) with detection radius 3 reaches across the first
+        # line but not the far part.
+        wide = ["arch map", "name wide", "width 16", f"height {SIZE}",
+                "difficulty 10", "region r", "end"]
+        for y in range(SIZE):
+            for x in range(16):
+                if x not in (1, 10):
+                    wide += ["arch floor", f"x {x}", f"y {y}", "end"]
+        wide += ["arch spawn_point", "x 3", "y 2", "arch caster", "type 83",
+                 "end", "end"]
+        (maps / "t" / "wide").write_text("\n".join(wide) + "\n")
         # Seams join only the components that touch across the edge.
         write("t/cave_7_0", wall_y=3)
         write("t/cave_8_0", wall_y=3)
@@ -510,15 +535,20 @@ class ApproachGraphTest(unittest.TestCase):
             self.analyzer._paired_exits(
                 "/t/pair_0_0", self.analyzer._world().nodes["/t/pair_0_0"].exits[0]))
 
-    def test_threat_charges_only_the_crossed_component(self):
-        labels = self.analyzer._components("/t/halves")
-        options = self.template
-        west = self.analyzer._approach_threat("/t/halves", options, labels[(1, 1)])
-        east = self.analyzer._approach_threat("/t/halves", options, labels[(5, 1)])
-        whole = self.analyzer._approach_threat("/t/halves", options)
-        self.assertEqual(0.0, west.pack_danger)
-        self.assertGreater(east.pack_danger, 0.0)
-        self.assertEqual(whole.pack_danger, east.pack_danger)
+    def test_threat_charges_spawns_whose_radius_reaches_the_component(self):
+        labels = self.analyzer._components("/t/wide")
+        west, middle, east = labels[(0, 0)], labels[(4, 4)], labels[(12, 0)]
+        self.assertEqual(3, len({west, middle, east}))
+        threat = self.analyzer._approach_threat
+        behind_line = threat("/t/wide", self.template, west)
+        own = threat("/t/wide", self.template, middle)
+        far = threat("/t/wide", self.template, east)
+        self.assertGreater(behind_line.pack_danger, 0.0)
+        self.assertEqual(own.pack_danger, behind_line.pack_danger)
+        self.assertIn("caster×1", behind_line.flags)
+        self.assertEqual(0.0, far.pack_danger)
+        self.assertEqual(own.pack_danger,
+                         threat("/t/wide", self.template).pack_danger)
 
     def test_savebed_detection_ignores_carried_beds(self):
         self.assertEqual(

@@ -289,8 +289,9 @@ fits the limit. Other components of the spot's own maps are free and are not
 listed, because the spot's safety already covers them.
 
 Each crossed component is charged for its map's worst aggressive encounter
-among the spawns standing in that component (a spawn with no walkable tile
-nearby is charged in every component), reusing the
+among the spawns standing in that component or whose own detection radius
+reaches one of its tiles by Chebyshev distance, so casters, archers, flyers
+and swimmers behind rock, tree or water lines still count, reusing the
 spot's monster, damage, hit-chance, kill-time and protection model. Spawns
 whose own detection radius reaches one pull point fight together. That pack
 is charged by sequential exposure: every living monster keeps attacking until

@@ -740,9 +740,11 @@ class FarmingAnalyzer:
                          component: int | None = None) -> ApproachThreat:
         """Measure the worst aggressive encounter met while crossing one map.
 
-        With ``component``, only spawns standing in (or, when blocked, next
-        to) that walkable component are charged; a spawn with no walkable
-        tile nearby is charged everywhere, conservatively.
+        With ``component``, a spawn is charged when it stands in (or, when
+        blocked, next to) that walkable component, or when its own detection
+        radius reaches a tile of the component by Chebyshev distance. Casters,
+        archers, flyers and swimmers can engage across rock, tree or water
+        lines that only block walking; components far apart stay distinct.
 
         Every hostile spawn point and directly placed monster is included,
         whatever --include-static says, because a traveller meets them when
@@ -767,8 +769,17 @@ class FarmingAnalyzer:
                 parsed, options, include_static=True)[0]
             self._spawn_cache[key] = spawns
         if component is not None and key in self._world().nodes:
-            spawns = [spawn for spawn in spawns
-                      if component in (self._land(key, spawn.x, spawn.y) or (component,))]
+            tiles = [tile for tile, label in self._components(key).items()
+                     if label == component]
+
+            def reaches(spawn: SpawnProfile) -> bool:
+                if component in self._land(key, spawn.x, spawn.y):
+                    return True
+                radius = spawn.weighted("aggro_radius")
+                return any(max(abs(spawn.x - x), abs(spawn.y - y)) <= radius
+                           for x, y in tiles)
+
+            spawns = [spawn for spawn in spawns if reaches(spawn)]
         if spawns:
             fighters: list[tuple[float, float, float, float]] = []
             weights: list[float] = []
