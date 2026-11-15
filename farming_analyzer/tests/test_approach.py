@@ -78,20 +78,30 @@ LOST = "underground_city_9_9"
 
 
 def _map(name: str, region: str, *, spawns: tuple[tuple[str, int, int], ...] = (),
-         exits: tuple[tuple[str, int, int], ...] = (), extra: str = "",
-         header: tuple[str, ...] = ()) -> str:
+         exits: tuple[tuple, ...] = (), extra: str = "",
+         header: tuple[str, ...] = (), wall_x: int | None = None,
+         wall_y: int | None = None) -> str:
+    """Write a fully floored map; ``wall_x``/``wall_y`` leave a column/row bare.
+
+    Exits are (target, x, y) or (target, x, y, hp, sp); without hp/sp the
+    test exit archetype lands on the target's (0, 0).
+    """
     lines = [
         "arch map", f"name {name}", f"width {SIZE}", f"height {SIZE}",
         "difficulty 10", f"region {region}", *header, "end",
     ]
     for y in range(SIZE):
         for x in range(SIZE):
-            lines += ["arch floor", f"x {x}", f"y {y}", "end"]
+            if x != wall_x and y != wall_y:
+                lines += ["arch floor", f"x {x}", f"y {y}", "end"]
     for monster, x, y in spawns:
         lines += ["arch spawn_point", f"x {x}", f"y {y}",
                   f"arch {monster}", "type 83", "end", "end"]
-    for target, x, y in exits:
-        lines += ["arch exit", f"x {x}", f"y {y}", f"slaying {target}", "end"]
+    for target, x, y, *arrival in exits:
+        lines += ["arch exit", f"x {x}", f"y {y}", f"slaying {target}"]
+        if arrival:
+            lines += [f"hp {arrival[0]}", f"sp {arrival[1]}"]
+        lines += ["end"]
     return "\n".join(lines) + "\n" + extra
 
 
@@ -110,10 +120,14 @@ class ApproachDangerTest(unittest.TestCase):
         (maps / "regions.reg").write_text(
             "region surface\nlongname Surface\nend\n"
             "region dungeon\nlongname Dungeon\nend\n")
-        # The surface world tile is an origin; it leads into both dungeons.
+        # The surface tile has an inn door, so it is a town origin; it leads
+        # into both dungeons.
         (maps / "world_0_0").write_text(_map(
             "Surface", "surface",
-            exits=(("danger/entry", 1, 1), ("/safe/entry", 4, 4))))
+            exits=(("danger/entry", 1, 1), ("/safe/entry", 4, 4), ("inn", 0, 5))))
+        (maps / "inn").write_text(_map(
+            "Inn", "surface", exits=(("world_0_0", 0, 0),),
+            extra="arch bed_save\nx 2\ny 2\nend\n"))
         rats = (("rat", 1, 1), ("rat", 4, 4))
         for dungeon, x, entry_spawns in (
                 ("danger", 0, (("pudding", 2, 2), ("pudding", 3, 2),
@@ -225,13 +239,14 @@ class ApproachDangerTest(unittest.TestCase):
             max_approach_maps=0))
         danger = results[DANGER]
         self.assertEqual("unreachable", danger.approach_status)
-        self.assertEqual(("approach_unknown",), danger.approach_danger_flags)
+        self.assertTrue(danger.approach_unknown)
+        self.assertEqual((), danger.approach_danger_flags)
         self.assertEqual(danger.spot_safety_score, danger.safety_score)
 
     def test_disconnected_spot_is_flagged_and_optionally_capped(self):
         lost = self.results(self.options())[f"maps/lost/{LOST}"]
         self.assertEqual("unreachable", lost.approach_status)
-        self.assertEqual(("approach_unknown",), lost.approach_danger_flags)
+        self.assertTrue(lost.approach_unknown)
         self.assertEqual(lost.spot_safety_score, lost.safety_score)
         capped = self.results(self.options(
             unreachable_approach_safety=0.3))[f"maps/lost/{LOST}"]
@@ -297,12 +312,39 @@ class ApproachGraphTest(unittest.TestCase):
                 "O": ("N",), "N": ("M",), "M": ("x2", "Y"), "x2": ("x1",),
                 "x1": ("S",), "Y": ("S",), "S": ()}.items():
             write(f"g/{source}", exits=tuple((target, 0, 0) for target in targets))
-        # Origins: a charged surface tile and a free savebed map.
-        write("world_0_0", exits=(("t/via_world", 0, 0), ("t/only_world", 0, 0)))
-        write("t/bedroom", exits=(("via_world", 0, 0),),
+        # Town: the bedroom's door joins the surface tile world_0_0, which is
+        # therefore a charged origin; the savebed itself is free.
+        write("world_0_0", exits=(
+            ("t/via_world", 0, 0), ("t/only_world", 0, 1), ("t/bedroom", 0, 2),
+            ("t/hall", 0, 3), ("t/vault", 0, 4, 1, 1), ("t/split", 0, 5, -1, -1),
+            ("t/cave_7_0", 1, 0, 1, 1)))
+        write("t/bedroom", exits=(("via_world", 0, 0), ("../world_0_0", 1, 1)),
               extra="arch bed_save\nx 2\ny 2\nend\n")
         write("t/via_world")
         write("t/only_world")
+        # An islet: a surface tile with no seam to a town. Its exit leads to
+        # t/under, which is otherwise only reachable through the hall.
+        write("world_5_5", exits=(("t/under", 2, 2),))
+        write("t/under", exits=(("../world_5_5", 1, 1),))
+        write("t/hall", exits=(("under", 1, 1),))
+        # A walled-off surface pocket on a town tile: only its west half is
+        # joined to the inn, the east half is entered from below.
+        write("world_3_0", wall_x=3, exits=(("t/inn2", 1, 1), ("t/pocket", 5, 5)))
+        write("t/inn2", exits=(("../world_3_0", 0, 0, 1, 1),),
+              extra="arch bed_save\nx 2\ny 2\nend\n")
+        write("t/pocket", exits=(("../world_3_0", 0, 0, 5, 5),))
+        # A dungeon dead end: the vault's east half holds the only exit to
+        # the secret room, but arrivals land in its west half.
+        write("t/vault", wall_x=3, exits=(("secret", 5, 5),))
+        write("t/secret", exits=(("vault", 0, 0, 5, 5),))
+        # Arrival by enter_x/enter_y when the exit's hp/sp is -1.
+        write("t/split", wall_x=3, header=("enter_x 5", "enter_y 5"),
+              exits=(("east_spot", 5, 4), ("west_spot", 1, 1)))
+        write("t/east_spot")
+        write("t/west_spot")
+        # Seams join only the components that touch across the edge.
+        write("t/cave_7_0", wall_y=3)
+        write("t/cave_8_0", wall_y=3)
         # A bed_save carried in a container does not make a savebed map.
         write("t/storeroom", extra="arch wall\nx 1\ny 1\n"
               "arch bed_save\nend\nend\n")
@@ -331,7 +373,12 @@ class ApproachGraphTest(unittest.TestCase):
         cls.directory.cleanup()
 
     def predecessors(self, key: str) -> tuple[str, ...]:
-        return self.analyzer._links()[0].get(key, ())
+        """Maps with a move into any walkable part of ``key``."""
+        labels = set(self.analyzer._components(key).values())
+        return tuple(sorted({
+            source for label in labels
+            for source, _label in self.analyzer._predecessors((key, label))
+            if source != key}))
 
     def approach(self, spot: str, threats: dict[str, float], **changes) -> MapResult:
         options = replace(self.template, **changes)
@@ -380,21 +427,76 @@ class ApproachGraphTest(unittest.TestCase):
             "/t/only_world", threats, approach_origins=("/world_0_0",),
             approach_origins_only=True)
         self.assertEqual(0.0, explicit.approach_danger)
-        self.assertEqual(
-            "unreachable",
-            self.approach("/t/via_world", threats, approach_origins=("/g/O",),
-                          approach_origins_only=True).approach_status)
+        unreachable = self.approach(
+            "/t/via_world", threats, approach_origins=("/g/O",),
+            approach_origins_only=True)
+        self.assertEqual("unreachable", unreachable.approach_status)
+        self.assertTrue(unreachable.approach_unknown)
+
+    def test_islet_surface_exit_does_not_count(self):
+        self.assertFalse(self.analyzer._surface_origin(("/world_5_5", 0)))
+        self.assertTrue(self.analyzer._surface_origin(("/world_0_0", 0)))
+        under = self.approach("/t/under", {"/t/hall": 80.0})
+        self.assertEqual("maps/world_0_0", under.approach_origin)
+        self.assertEqual(("maps/t/hall",), under.approach_maps)
+        self.assertEqual(80.0, under.approach_danger)
+
+    def test_surface_pocket_entered_only_from_below_does_not_count(self):
+        labels = self.analyzer._components("/world_3_0")
+        west, east = labels[(1, 1)], labels[(5, 5)]
+        self.assertNotEqual(west, east)
+        self.assertTrue(self.analyzer._surface_origin(("/world_3_0", west)))
+        self.assertFalse(self.analyzer._surface_origin(("/world_3_0", east)))
+        pocket = self.approach("/t/pocket", {})
+        self.assertEqual("unreachable", pocket.approach_status)
+
+    def test_dungeon_dead_end_reachable_only_from_inside(self):
+        secret = self.approach("/t/secret", {})
+        self.assertEqual("unreachable", secret.approach_status)
+        vault = self.analyzer._components("/t/vault")
+        self.assertIn(("/t/secret", 0), self.analyzer._predecessors(
+            ("/t/vault", vault[(5, 5)])))
+        self.assertEqual((), tuple(
+            node for node in self.analyzer._predecessors(("/t/vault", vault[(5, 5)]))
+            if node[0] != "/t/secret"))
+
+    def test_exit_arrival_uses_enter_x_and_enter_y(self):
+        east = self.approach("/t/east_spot", {"/t/split": 5.0})
+        self.assertEqual("path", east.approach_status)
+        self.assertEqual(("maps/t/split",), east.approach_maps)
+        self.assertEqual("unreachable", self.approach("/t/west_spot", {}).approach_status)
+
+    def test_seams_join_only_touching_components(self):
+        west, east = (self.analyzer._components(f"/t/cave_{x}_0") for x in (7, 8))
+        north = (west[(1, 1)], "/t/cave_8_0", east[(1, 1)], True)
+        south = (west[(1, 5)], "/t/cave_8_0", east[(1, 5)], True)
+        edges = self.analyzer._out_edges("/t/cave_7_0")
+        self.assertIn(north, edges)
+        self.assertIn(south, edges)
+        self.assertNotIn((west[(1, 1)], "/t/cave_8_0", east[(1, 5)], True), edges)
+        self.assertEqual("path", self.approach("/t/cave_8_0", {}).approach_status)
+        south_spot = replace(self.template)
+        required = {
+            item.name: 0 for item in fields(MapResult)
+            if item.default is MISSING and item.default_factory is MISSING}
+        required.update(path="s", name="s", region="r")
+        result = MapResult(**required, map_paths=("maps/t/cave_8_0",),
+                           spawn_points=(("maps/t/cave_8_0", 1, 5),))
+        self.analyzer._apply_approach(result, south_spot)
+        self.assertEqual("unreachable", result.approach_status)
 
     def test_savebed_detection_ignores_carried_beds(self):
-        _predecessors, surface, savebeds = self.analyzer._links()
-        self.assertEqual(frozenset({"/world_0_0"}), surface)
-        self.assertEqual(frozenset({"/t/bedroom"}), savebeds)
+        self.assertEqual(
+            {"/t/bedroom", "/t/inn2"},
+            {key for key, _label in self.analyzer._savebed_nodes()})
+        self.assertEqual(frozenset({"/world_0_0", "/world_3_0", "/world_5_5"}),
+                         self.analyzer._map_index()[1])
 
     def test_exit_and_tile_path_resolution(self):
         self.assertEqual(("/t/sub/deep",), self.predecessors("/t/up"))
         self.assertEqual(("/t/sub/deep",), self.predecessors("/t/abs_target"))
         self.assertEqual(("/t/sub/deep",), self.predecessors("/t/tiled_east"))
-        self.assertNotIn("/t/sub/nowhere", self.analyzer._links()[0])
+        self.assertNotIn("/t/sub/nowhere", self.analyzer._map_index()[0])
         self.assertEqual("/t/up", FarmingAnalyzer._resolve_map_path(
             "/t/sub/deep", "../up"))
         self.assertEqual("/t/abs_target", FarmingAnalyzer._resolve_map_path(
@@ -414,6 +516,14 @@ class ApproachGraphTest(unittest.TestCase):
                          FarmingAnalyzer._tile_coordinates("cave_2_1_-1"))
         self.assertIsNone(FarmingAnalyzer._tile_coordinates("ruins_0101"))
         self.assertIsNone(FarmingAnalyzer._tile_coordinates("cave_1"))
+
+    def test_sequential_exposure_counts_partial_aggression_once(self):
+        # Two certain monsters: the second is charged while the first dies.
+        self.assertEqual(30.0, FarmingAnalyzer._sequential_exposure(
+            [(1.0, 1.0, 10.0, 0.0), (1.0, 1.0, 10.0, 0.0)]))
+        # A monster that is aggressive half the time costs half as much.
+        self.assertEqual(5.0, FarmingAnalyzer._sequential_exposure(
+            [(0.5, 1.0, 10.0, 0.0)]))
 
     def test_resolve_map_key_accepts_content_and_map_root_paths(self):
         for spelling in ("/t/up", "t/up", "maps/t/up", "/maps/t/up"):
@@ -469,6 +579,29 @@ class UndergroundCityEntranceTest(unittest.TestCase):
         self.assertLess(spot.safety_score, 0.9)
         for flag in ("fire×3", "acid×1", "poison×1"):
             self.assertIn(flag, spot.approach_danger_flags)
+
+    def test_circuits_no_longer_use_the_inside_only_lake_exit(self):
+        results = self.analyzer.scan(self.sera(
+            244.0, path_pattern=r"underground_city_[0-4]_[0-4]$"))
+        city = [result for result in results
+                if "underground_city" in result.path and result.approach_status == "path"]
+        self.assertTrue(city)
+        # world_2_69's exit_green stands on a two-tile pocket reached only
+        # from inside the city, so it is not an origin.
+        self.assertFalse(any(result.approach_origin.endswith("/world_2_69")
+                             for result in city))
+        prefix = ("maps/shattered_islands/strakewood_island/underground_city/"
+                  "underground_city_")
+        for members in (("2_2", "2_3", "3_1", "3_2"), ("0_4", "1_2", "1_3", "1_4")):
+            circuit = next(
+                result for result in results
+                if sorted(result.map_paths) == [prefix + member for member in members])
+            self.assertTrue(
+                prefix + "0_0" in circuit.approach_maps or
+                prefix + "5_2_-1" in circuit.approach_maps, circuit.approach_maps)
+            self.assertLess(circuit.safety_score, 0.9)
+            labels = {flag.split("×")[0] for flag in circuit.approach_danger_flags}
+            self.assertLessEqual({"fire", "acid", "poison"}, labels)
 
 
 if __name__ == "__main__":

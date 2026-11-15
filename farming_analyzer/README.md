@@ -236,87 +236,110 @@ rest time are solved together.
 
 ## Approach danger
 
-A spot is only as safe as the maps crossed to reach it. Before scoring, the
-analyzer builds a map graph from:
+A spot is only as safe as the maps crossed to reach it. The approach search
+runs over walkable components rather than whole maps: each map's walkable
+tiles are split into 8-neighbour connected components, computed lazily for
+the maps the search reaches and cached. A character can move:
 
-- authored `type 66` exits placed directly on a map (not ones carried in a
-  spawn point or container), following their `slaying` destination relative
-  to the map, or from the map root when it starts with `/`;
-- header `tile_path_N` links;
-- horizontal tiling derived from map names as `derive_map_filename_tiles()`
-  in classic `server/src/server/map.c` does: any basename with two or three
-  numeric words of at most three characters (`cave_2_1_-1`) tiles with the
-  eight same-depth neighbours whose derived names exist, when a tile on each
-  side of the shared edge or corner is walkable.
+- through a placed `type 66` exit (not one carried in a spawn point or
+  container) from its own tile, or from an adjacent walkable tile when the
+  exit tile is blocked. It lands at the exit's `hp`/`sp`, at the target's
+  `enter_x`/`enter_y` when those are out of range (such as `-1`), or on an
+  adjacent free tile when the landing tile is blocked, as
+  `object_enter_map()` does. `slaying` resolves relative to the map, or from
+  the map root when it starts with `/`. Stairs without `slaying` use
+  `last_heal` (9 up, 10 down, or a horizontal direction) to pick the tiled
+  map and keep their own position; an exit without `slaying` but with
+  `hp`/`sp` moves within its own map. Paired `sub_type` exits, scripts, keys
+  and locks are not followed; doors count as open;
+- across a tiled map edge or corner from an edge tile to the walkable tile
+  beyond it. Tiling follows `derive_map_filename_tiles()` in classic
+  `server/src/server/map.c`: header `tile_path_N` (direction `N - 1`) wins,
+  otherwise any basename with two or three numeric words of at most three
+  characters (`cave_2_1_-1`) derives its neighbours' names when those maps
+  exist. Only the eight same-depth directions are walked; up/down tiles are
+  used only by stairs, not as seams.
 
-This approximates the server's tiling. Explicit tile paths do not replace the
-derived neighbour in that direction, and the server's derived up/down tiles
-are not linked: depth changes only follow authored exits and tile paths.
-Missing destinations are ignored.
+Origins are components:
 
-Origins are surface `world_X_Y` tiles (depth 0) and every map holding a
-placed savebed (`type 106`), plus each repeatable `--approach-origin MAP`.
-`MAP` may be written `/region/map`, `region/map`, or `maps/region/map`; an
-unknown map is an error. `--approach-origins-only` uses only the
-`--approach-origin` maps, for example "I start from my savebed". A savebed or
-explicit origin is where the character starts and is free. A surface tile is
-charged its own danger, because the character must cross it to use its
-entrance. The `--path` filter and `--exclude-region` do not hide approach
-maps.
+- each placed savebed's component (free);
+- every walkable component of each `--approach-origin MAP` (free). `MAP` may
+  be written `/region/map`, `region/map`, or `maps/region/map`; an unknown
+  map is an error. `--approach-origins-only` uses only these, for example
+  "I start from my savebed";
+- town-connected surface components (charged). Surface components (depth-0
+  `world_X_Y` tiles) are grouped by walking seams between surface tiles
+  only. A group is town-connected when one of its components holds a
+  savebed or is joined by an exit to or from a savebed map, such as an inn
+  door. Islets, ship-only islands, and surface pockets entered only from
+  below are therefore not origins. A charged surface origin costs its map's
+  own danger, because the character must cross it to use its entrance.
 
-A bottleneck search walks backwards from the spot's maps to an origin,
-minimizing the most dangerous map crossed, then the number of maps, then the
-map names, so the result is deterministic. It crosses at most
-`--max-approach-maps` maps between origin and spot (default 16). A map is
-expanded again when reached with fewer maps, so a long safe path cannot block
-a shorter one that fits the limit.
+The `--path` filter and `--exclude-region` do not hide approach maps.
+
+A bottleneck search walks backwards from the components holding the spot's
+spawns to an origin, minimizing the most dangerous map crossed, then the
+number of components crossed, then their names, so the result is
+deterministic. It crosses at most `--max-approach-maps` components between
+origin and spot (default 16). A component is expanded again when reached
+with fewer crossings, so a long safe path cannot block a shorter one that
+fits the limit. Other components of the spot's own maps are free and are not
+listed, because the spot's safety already covers them.
 
 Each crossed map is charged for its worst aggressive encounter, reusing the
 spot's monster, damage, hit-chance, kill-time and protection model. Spawns
 whose own detection radius reaches one pull point fight together. That pack
 is charged by sequential exposure: every living monster keeps attacking until
 it dies, killed in the order that minimizes damage (ascending kill time per
-incoming DPS), plus each monster's secondary-risk bonus. Without
-`--max-health`, the worst single aggressive spawn is charged instead,
-matching the relative per-monster safety model. Directly placed monsters
-count even without `--include-static`, because they are present when a
-traveller loads the map. Passive monsters are skipped. AoE is not credited
-on the approach. Each map's threat is cached for the current options.
+incoming DPS), plus each monster's secondary-risk bonus. A spawn that is
+aggressive with probability `p` is charged `p` times its conditional damage
+and adds `p` times its kill time to the monsters after it. For `n` identical
+monsters this charges `n(n + 1)/2` kills' worth of exposure, about
+`(n + 1)/2` times the farming model's `n` (danger times pack size). That is
+deliberate: a farmer chooses pulls and fights one monster at a time, while a
+traveller crossing the map meets the whole pack at once and every monster
+still alive keeps hitting. Without `--max-health`, the worst single
+aggressive spawn is charged instead, matching the relative per-monster
+safety model. Directly placed monsters count even without
+`--include-static`, because they are present when a traveller loads the
+map. Passive monsters are skipped. AoE is not credited on the approach.
+Each map's threat is cached for the current options.
 
 The approach safety uses the same reference as the spot: `max_health /
 approach_danger` with `--max-health`, otherwise the least dangerous eligible
 spot's danger divided by `approach_danger`, capped at one. The reported
 `safety_score`, and therefore the balanced score and `--ranking safety`, is
-the lower of the spot and approach safeties. A spot with no authored path
-from an origin within the limit keeps its own safety and gets the
-`approach_unknown` flag; `--unreachable-approach-safety SAFETY` (0 to 1)
-caps such spots instead. Scripted teleports, keys, locked doors, and running
-past monsters are not modeled. Neither is the variance of a fight, nor the
-server's poisoning pulses (`attack_perform_poison()`: five to ten pulses of
-up to a third of maximum HP) beyond the secondary-risk heuristic, so a pack
-whose expected damage is just inside one health bar still reports full
-safety. `--ignore-approach` restores the spot-only score.
+the lower of the spot and approach safeties. A spot with no path from an
+origin within the limit keeps its own safety and sets `approach_unknown`;
+`--unreachable-approach-safety SAFETY` (0 to 1) caps such spots instead.
+Running past monsters, fight variance, and the server's poisoning pulses
+(`attack_perform_poison()`: five to ten pulses of up to a third of maximum
+HP) beyond the secondary-risk heuristic are not modeled, so a pack whose
+expected damage is just inside one health bar still reports full safety.
+`--ignore-approach` restores the spot-only score.
 
 Each result (`results`, `groups[].representative`, and `rankings`) adds these
 JSON fields; existing fields keep their names and types:
 
 - `spot_safety_score`: the spot-only safety previously reported as
   `safety_score`;
-- `approach_status`: `path` (an origin was found; `approach_maps` may be
-  empty when a charged surface tile leads straight in), `origin` (a member
-  map is itself an origin), `unreachable`, or `disabled`;
+- `approach_status`: `path` (an origin was found), `origin` (a spawn's
+  component is itself an origin), `unreachable`, or `disabled`. `path` can
+  come with an empty `approach_maps` when a charged surface origin leads
+  straight into the spot; `approach_danger` is then that origin's danger;
+- `approach_unknown`: true exactly when `approach_status` is `unreachable`;
 - `approach_origin`: content-relative origin map, empty unless `path`;
 - `approach_maps`: content-relative maps crossed, ordered from the origin
-  towards the spot, excluding the origin;
+  towards the spot, excluding the origin and the spot's own maps;
 - `approach_danger`: the charged danger of the worst approach map, including
   a charged surface origin;
 - `approach_safety_score`: 0 to 1; 1 without a charged approach, or the
   `--unreachable-approach-safety` cap;
 - `approach_worst_map`: the map that sets `approach_danger`;
 - `approach_danger_flags`: attack and behaviour flags of the monsters in each
-  charged map's worst encounter (for example `fire×3`), a
-  `MAP L<level> > allowed L<limit>` entry for any charged map whose monsters
-  exceed the `--max-level-gap` allowance, or `approach_unknown`.
+  charged map's worst encounter, summed over those maps (for example
+  `fire×3`), plus a `MAP L<level> > allowed L<limit>` entry for any charged
+  map whose monsters exceed the `--max-level-gap` allowance.
 
 ## Profiles, rankings, diagnostics, and training
 

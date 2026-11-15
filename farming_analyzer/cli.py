@@ -120,10 +120,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--exclude-region", action="append", default=[], metavar="NAME",
                         help="exclude a region/island ID or name; may be repeated")
     parser.add_argument("--approach-origin", action="append", default=[], metavar="MAP",
-                        help="extra map the character starts from, such as its savebed map; "
-                             "may be repeated (surface world tiles and savebed maps are always origins)")
+                        help="extra map the character starts from, such as its savebed map; any of "
+                             "its walkable parts counts; may be repeated (savebeds and town-connected "
+                             "surface tiles are also origins unless --approach-origins-only)")
     parser.add_argument("--max-approach-maps", type=int, default=16,
-                        help="longest approach, in maps between origin and spot (default: 16)")
+                        help="longest approach, in walkable map components between origin "
+                             "and spot (default: 16)")
     parser.add_argument("--approach-origins-only", action="store_true",
                         help="use only --approach-origin maps as origins, not surface tiles or savebeds")
     parser.add_argument("--unreachable-approach-safety", type=float, metavar="SAFETY",

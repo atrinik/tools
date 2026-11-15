@@ -150,6 +150,7 @@ class MapResult:
     approach_safety_score: float = 1.0
     approach_worst_map: str = ""
     approach_danger_flags: tuple[str, ...] = ()
+    approach_unknown: bool = False
 
 
 @dataclass(frozen=True)

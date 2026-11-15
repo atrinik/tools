@@ -335,8 +335,8 @@ def render_text(results: list[MapResult], options: AnalysisOptions, limit: int,
         elif result.approach_status == "unreachable":
             capped = options.unreachable_approach_safety
             lines.append(
-                "   approach: unknown (approach_unknown) — no authored exit path from an "
-                "origin within --max-approach-maps; "
+                "   approach: unknown — no walkable authored path from a savebed, town "
+                "surface, or --approach-origin within --max-approach-maps; "
                 + ("scored on the spot alone" if capped is None else
                    f"safety capped at {capped * 100.0:.0f}%"))
         if options.character_speed > 0.0:
@@ -394,8 +394,8 @@ def render_text(results: list[MapResult], options: AnalysisOptions, limit: int,
         "skill level is held constant. Spawn-point respawn is "
         "source-derived; map-reset-only monsters require the map to unload and are excluded unless "
         "--include-static is used. Safety is also capped by the least dangerous authored approach: "
-        "exits, tile paths, and walkable coordinate seams from a surface world tile, savebed map, or "
-        "--approach-origin, charging the worst aggressive pack on each map crossed (including "
+        "exits, tile paths, and walkable coordinate seams between walkable components, from a "
+        "savebed, a town-connected surface tile, or --approach-origin, charging the worst aggressive pack on each map crossed (including "
         "map-reset monsters and the entrance surface tile) by sequential exposure. Scripted teleports, keys, locked doors, and fleeing past monsters are "
         "not modeled; --ignore-approach scores the spot alone.",
     ))

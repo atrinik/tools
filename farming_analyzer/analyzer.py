@@ -61,6 +61,12 @@ class ApproachThreat:
     flags: tuple[str, ...]
 
 
+# Server map_tiled_coords order (server/src/server/map.c); 8 and 9 are up/down.
+TILE_DIRECTIONS = ((0, -1), (1, 0), (0, 1), (-1, 0), (1, -1), (1, 1), (-1, 1), (-1, -1))
+TILE_INDEX = {direction: index for index, direction in enumerate(TILE_DIRECTIONS)}
+TILED_UP, TILED_DOWN = 8, 9
+
+
 class FarmingAnalyzer:
     def __init__(self, root: Path = ROOT, server_root: Path = SERVER_ROOT):
         self.root = root
@@ -75,8 +81,14 @@ class FarmingAnalyzer:
         self.tick_seconds = self._constant("MAX_TIME", 125000) / 1_000_000.0
         self.default_reset = self._constant("MAP_DEFAULTRESET", 7200)
         self._world_graph = None
-        self._world_links: tuple[dict[str, tuple[str, ...]],
-                                 frozenset[str], frozenset[str]] | None = None
+        self._map_index_cache: tuple[dict[str, frozenset[str]], frozenset[str]] | None = None
+        self._tile_cache: dict[str, dict[int, str]] = {}
+        self._component_cache: dict[str, dict[tuple[int, int], int]] = {}
+        self._edge_cache: dict[str, tuple[tuple[int, str, int, bool], ...]] = {}
+        self._predecessor_cache: dict[tuple[str, int], tuple[tuple[str, int], ...]] = {}
+        self._surface_region: dict[tuple[str, int], int] = {}
+        self._region_has_town: list[bool] = []
+        self._town_nodes: frozenset[tuple[str, int]] | None = None
         self._threat_options: AnalysisOptions | None = None
         self._threat_cache: dict[str, ApproachThreat] = {}
         self._npc_factions = self._load_npc_factions()
@@ -338,11 +350,14 @@ class FarmingAnalyzer:
                 )
                 key = "/" + path.relative_to(self.map_root).as_posix()
                 graph.nodes[key] = node
+                node.enter = (_integer(one(header["attrs"], "enter_x", 0)),
+                              _integer(one(header["attrs"], "enter_y", 0)))
                 for name, values in header["attrs"].items():
-                    if re.fullmatch(r"tile_path_\d+", name) and values:
+                    match = re.fullmatch(r"tile_path_(\d+)", name)
+                    if match and values and 1 <= int(match.group(1)) <= len(TILE_DIRECTIONS) + 2:
                         target = self._resolve_map_path(key, values[-1])
                         if target is not None:
-                            node.exits.add(target)
+                            node.tile_paths[int(match.group(1)) - 1] = target
                 for obj, parent in flatten(parsed["objects"]):
                     attrs = merged_attrs(obj, self.archetypes)
                     x = _integer(one(
@@ -359,12 +374,14 @@ class FarmingAnalyzer:
                     obj_type = _integer(attrs.get("type"))
                     # Only exits placed on the map, not carried in an
                     # inventory or spawn template, lead the player elsewhere.
-                    if parent is None and obj_type == EXIT_TYPE and attrs.get("slaying"):
-                        target = self._resolve_map_path(key, attrs["slaying"])
-                        if target is not None:
-                            node.exits.add(target)
+                    if parent is None and obj_type == EXIT_TYPE:
+                        slaying = attrs.get("slaying", "")
+                        node.exits.append((
+                            x, y, self._resolve_map_path(key, slaying),
+                            _integer(attrs.get("hp")), _integer(attrs.get("sp")),
+                            _integer(attrs.get("last_heal"))))
                     elif parent is None and obj_type == SAVEBED_TYPE:
-                        node.savebed = True
+                        node.savebeds.append((x, y))
                     # Doors, exits, and teleporters are traversable server-side.
                     if attrs.get("no_pass") == "1" and attrs.get("type") not in (
                             "20", "64", "66"):
@@ -407,69 +424,234 @@ class FarmingAnalyzer:
         z = coordinates[2] if len(coordinates) > 2 else 0
         return basename[:max(0, len(basename) - length)], coordinates[0], coordinates[1], z
 
-    @staticmethod
-    def _seam_walkable(source: TerrainMap, target: TerrainMap,
-                       dx: int, dy: int) -> bool:
-        """Return whether a tile pair across a tiled-map edge or corner is walkable."""
-        if dx and dy:
-            return (source.walkable(source.width - 1 if dx > 0 else 0,
-                                    source.height - 1 if dy > 0 else 0) and
-                    target.walkable(0 if dx > 0 else target.width - 1,
-                                    0 if dy > 0 else target.height - 1))
-        if dx:
-            source_x = source.width - 1 if dx > 0 else 0
-            target_x = 0 if dx > 0 else target.width - 1
-            return any(
-                source.walkable(source_x, y) and target.walkable(target_x, y)
-                for y in range(min(source.height, target.height)))
-        source_y = source.height - 1 if dy > 0 else 0
-        target_y = 0 if dy > 0 else target.height - 1
-        return any(
-            source.walkable(x, source_y) and target.walkable(x, target_y)
-            for x in range(min(source.width, target.width)))
+    def _tiles(self, key: str) -> dict[int, str]:
+        """Return a map's tiled neighbours by server direction index.
 
-    def _links(self) -> tuple[dict[str, tuple[str, ...]], frozenset[str], frozenset[str]]:
-        """Return reverse map connectivity, surface origins, and savebed maps.
-
-        A map links to another through an authored exit (``type 66`` with a
-        ``slaying`` destination), a header ``tile_path_N``, or a walkable
-        edge or corner between maps the server tiles horizontally from their
-        coordinate names (same depth, all eight directions). Depth changes
-        only follow authored exits and tile paths. The returned mapping lists,
-        for every map, the maps that lead into it.
+        Header ``tile_path_N`` entries win; otherwise the neighbour is derived
+        from the coordinate name, as derive_map_filename_tiles() does, when
+        that map exists.
         """
-        if self._world_links is None:
-            graph = self._world()
-            predecessors: dict[str, set[str]] = defaultdict(set)
+        cached = self._tile_cache.get(key)
+        if cached is not None:
+            return cached
+        nodes = self._world().nodes
+        tiles = dict(nodes[key].tile_paths)
+        coordinates = self._tile_coordinates(posixpath.basename(key))
+        if coordinates is not None:
+            prefix, x, y, z = coordinates
+            parent = posixpath.dirname(key)
+
+            def name(cx: int, cy: int, cz: int) -> str:
+                return posixpath.join(
+                    parent, f"{prefix}_{cx}_{cy}" + (f"_{cz}" if cz else ""))
+
+            for index, (dx, dy) in enumerate(TILE_DIRECTIONS):
+                tiles.setdefault(index, name(x + dx, y + dy, z))
+            tiles.setdefault(TILED_UP, name(x, y, z + 1))
+            tiles.setdefault(TILED_DOWN, name(x, y, z - 1))
+        tiles = {index: target for index, target in tiles.items()
+                 if target in nodes and target != key}
+        self._tile_cache[key] = tiles
+        return tiles
+
+    def _components(self, key: str) -> dict[tuple[int, int], int]:
+        """Label a map's walkable tiles by 8-neighbour connected component."""
+        cached = self._component_cache.get(key)
+        if cached is not None:
+            return cached
+        node = self._world().nodes[key]
+        labels: dict[tuple[int, int], int] = {}
+        label = -1
+        for start_y in range(node.height):
+            for start_x in range(node.width):
+                if (start_x, start_y) in labels or not node.walkable(start_x, start_y):
+                    continue
+                label += 1
+                labels[(start_x, start_y)] = label
+                frontier = [(start_x, start_y)]
+                while frontier:
+                    x, y = frontier.pop()
+                    for dx in (-1, 0, 1):
+                        for dy in (-1, 0, 1):
+                            tile = (x + dx, y + dy)
+                            if tile not in labels and node.walkable(*tile):
+                                labels[tile] = label
+                                frontier.append(tile)
+        self._component_cache[key] = labels
+        return labels
+
+    def _land(self, key: str, x: int, y: int) -> tuple[int, ...]:
+        """Components a character occupies at (x, y), or next to it when blocked.
+
+        Mirrors object_enter_map(): out-of-map coordinates fall back to the
+        map's enter_x/enter_y, and a blocked tile uses the adjacent free spots.
+        """
+        node = self._world().nodes[key]
+        if not (0 <= x < node.width and 0 <= y < node.height):
+            x, y = node.enter
+        labels = self._components(key)
+        if (x, y) in labels:
+            return (labels[(x, y)],)
+        return tuple(sorted({
+            labels[(x + dx, y + dy)] for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+            if (x + dx, y + dy) in labels}))
+
+    def _exit_destination(self, key: str, exit_object: tuple[int, int, str | None, int, int, int]
+                          ) -> tuple[str, int, int] | None:
+        """Resolve a placed exit like exit.c insert_map_func() and object_enter_map()."""
+        nodes = self._world().nodes
+        x, y, destination, hp, sp, last_heal = exit_object
+        if destination is None:
+            tiles = self._tiles(key)
+            if 0 < last_heal <= len(TILE_DIRECTIONS) + 2 and last_heal - 1 in tiles:
+                destination, hp, sp = tiles[last_heal - 1], x, y
+            elif hp != -1 and sp != -1:
+                destination = key
+            else:
+                return None
+        if destination not in nodes:
+            return None
+        return destination, hp, sp
+
+    def _out_edges(self, key: str) -> tuple[tuple[int, str, int, bool], ...]:
+        """Return (component, target map, target component, is_seam) moves.
+
+        Exits are taken from their own tile, or an adjacent walkable tile when
+        the exit tile is blocked, and land at their hp/sp destination (the
+        target's enter_x/enter_y when out of range). Seams join edge tiles to
+        the walkable tile across the edge or corner, 8-neighbour style.
+        """
+        cached = self._edge_cache.get(key)
+        if cached is not None:
+            return cached
+        nodes = self._world().nodes
+        node = nodes[key]
+        labels = self._components(key)
+        edges: set[tuple[int, str, int, bool]] = set()
+        for exit_object in node.exits:
+            resolved = self._exit_destination(key, exit_object)
+            if resolved is None:
+                continue
+            destination, hp, sp = resolved
+            for source in self._land(key, exit_object[0], exit_object[1]):
+                for arrival in self._land(destination, hp, sp):
+                    if (destination, arrival) != (key, source):
+                        edges.add((source, destination, arrival, False))
+        tiles = self._tiles(key)
+        for (x, y), label in labels.items():
+            if 0 < x < node.width - 1 and 0 < y < node.height - 1:
+                continue
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    nx, ny = x + dx, y + dy
+                    tx = (nx >= node.width) - (nx < 0)
+                    ty = (ny >= node.height) - (ny < 0)
+                    if not tx and not ty:
+                        continue
+                    other = tiles.get(TILE_INDEX[(tx, ty)])
+                    if other is None:
+                        continue
+                    target = nodes[other]
+                    mx = nx - node.width if tx > 0 else target.width + nx if tx < 0 else nx
+                    my = ny - node.height if ty > 0 else target.height + ny if ty < 0 else ny
+                    arrival = self._components(other).get((mx, my))
+                    if arrival is not None:
+                        edges.add((label, other, arrival, True))
+        result = tuple(sorted(edges))
+        self._edge_cache[key] = result
+        return result
+
+    def _map_index(self) -> tuple[dict[str, frozenset[str]], frozenset[str]]:
+        """Return the maps that can lead into each map, and surface tiles."""
+        if self._map_index_cache is None:
+            nodes = self._world().nodes
+            incoming: dict[str, set[str]] = defaultdict(set)
             surface = set()
-            savebeds = set()
-            for key, node in graph.nodes.items():
-                for target in node.exits:
-                    if target in graph.nodes and target != key:
-                        predecessors[target].add(key)
-                if node.savebed:
-                    savebeds.add(key)
+            for key, node in nodes.items():
+                for exit_object in node.exits:
+                    resolved = self._exit_destination(key, exit_object)
+                    if resolved is not None:
+                        incoming[resolved[0]].add(key)
+                for index, target in self._tiles(key).items():
+                    if index < len(TILE_DIRECTIONS):
+                        incoming[target].add(key)
                 world = LocationIndex.world_coordinates(posixpath.basename(key))
                 if world is not None and world[0] == "world" and world[3] == 0:
                     surface.add(key)
-                tiled = self._tile_coordinates(posixpath.basename(key))
-                if tiled is None:
-                    continue
-                prefix, x, y, z = tiled
-                parent = posixpath.dirname(key)
-                for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0),
-                               (1, -1), (1, 1), (-1, 1), (-1, -1)):
-                    name = f"{prefix}_{x + dx}_{y + dy}" + (f"_{z}" if z else "")
-                    other = posixpath.join(parent, name)
-                    if other != key and other in graph.nodes and self._seam_walkable(
-                            node, graph.nodes[other], dx, dy):
-                        predecessors[other].add(key)
-            self._world_links = (
-                {key: tuple(sorted(values)) for key, values in predecessors.items()},
-                frozenset(surface),
-                frozenset(savebeds),
-            )
-        return self._world_links
+            self._map_index_cache = (
+                {key: frozenset(values) for key, values in incoming.items()},
+                frozenset(surface))
+        return self._map_index_cache
+
+    def _predecessors(self, node: tuple[str, int]) -> tuple[tuple[str, int], ...]:
+        """Return the (map, component) nodes with a move into ``node``."""
+        cached = self._predecessor_cache.get(node)
+        if cached is not None:
+            return cached
+        incoming, _surface = self._map_index()
+        key, label = node
+        result = tuple(sorted({
+            (source, source_label)
+            for source in incoming.get(key, ())
+            for source_label, target, target_label, _seam in self._out_edges(source)
+            if target == key and target_label == label and (source, source_label) != node
+        }))
+        self._predecessor_cache[node] = result
+        return result
+
+    def _savebed_nodes(self) -> frozenset[tuple[str, int]]:
+        return frozenset(
+            (key, label)
+            for key, node in self._world().nodes.items()
+            for x, y in node.savebeds
+            for label in self._land(key, x, y))
+
+    def _surface_origin(self, node: tuple[str, int]) -> bool:
+        """Whether a surface component can be walked to from a town.
+
+        A town is a surface component that holds a savebed or is joined by an
+        exit to or from a map that holds one, for example an inn door. Surface
+        components are grouped by walking seams between surface tiles only, so
+        islets, ship-only islands, and surface pockets entered only from
+        below do not count.
+        """
+        _incoming, surface = self._map_index()
+        if node[0] not in surface:
+            return False
+        if self._town_nodes is None:
+            incoming, _surface = self._map_index()
+            savebed_maps = {key for key, value in self._world().nodes.items()
+                            if value.savebeds}
+            towns = set(self._savebed_nodes())
+            for key in savebed_maps:
+                for _label, target, target_label, _seam in self._out_edges(key):
+                    towns.add((target, target_label))
+                for source in incoming.get(key, ()):
+                    for label, target, _target_label, _seam in self._out_edges(source):
+                        if target == key:
+                            towns.add((source, label))
+            self._town_nodes = frozenset(towns)
+        region = self._surface_region.get(node)
+        if region is None:
+            region = len(self._region_has_town)
+            self._region_has_town.append(False)
+            self._surface_region[node] = region
+            frontier = [node]
+            while frontier:
+                current = frontier.pop()
+                if current in self._town_nodes:
+                    self._region_has_town[region] = True
+                for label, target, target_label, seam in self._out_edges(current[0]):
+                    if not seam or label != current[1] or target not in surface:
+                        continue
+                    neighbour = (target, target_label)
+                    known = self._surface_region.get(neighbour)
+                    if known is None:
+                        self._surface_region[neighbour] = region
+                        frontier.append(neighbour)
+                    elif known != region and self._region_has_town[known]:
+                        self._region_has_town[region] = True
+        return self._region_has_town[region]
 
     def resolve_map_key(self, path: str) -> str | None:
         """Resolve a user-supplied map path to an authored map, or None.
@@ -488,23 +670,26 @@ class FarmingAnalyzer:
         return None
 
     @staticmethod
-    def _sequential_exposure(fighters: list[tuple[float, float, float]]) -> float:
+    def _sequential_exposure(fighters: list[tuple[float, float, float, float]]) -> float:
         """Expected damage while killing an engaged pack one at a time.
 
-        Each fighter is (incoming DPS, kill seconds, secondary-risk bonus).
-        Every living monster keeps attacking until it dies, so a monster's DPS
-        is charged for the time until its own kill. Killing in ascending
-        kill-seconds/DPS order (Smith's rule) minimizes that total.
+        Each fighter is (probability it is an aggressive monster, incoming DPS,
+        kill seconds, expected secondary-risk bonus), DPS and kill time being
+        conditional on that monster being present. Every living monster keeps
+        attacking until it dies, so its DPS is charged until its own kill;
+        killing in ascending kill-seconds/DPS order (Smith's rule) minimizes
+        that total. Presence is independent, so each monster pays
+        ``p * dps * (own kill + expected earlier kills)``.
         """
         total = 0.0
         elapsed = 0.0
         damaging = sorted(
-            (item for item in fighters if item[0] > 0.0),
-            key=lambda item: item[1] / item[0])
-        for dps, kill_seconds, bonus in damaging:
-            elapsed += kill_seconds
-            total += dps * elapsed + bonus
-        total += sum(bonus for dps, _kill, bonus in fighters if dps <= 0.0)
+            (item for item in fighters if item[1] > 0.0),
+            key=lambda item: item[2] / item[1])
+        for probability, dps, kill_seconds, bonus in damaging:
+            total += probability * dps * (elapsed + kill_seconds) + bonus
+            elapsed += probability * kill_seconds
+        total += sum(item[3] for item in fighters if item[1] <= 0.0)
         return total
 
     def _approach_threat(self, key: str, options: AnalysisOptions) -> ApproachThreat:
@@ -529,7 +714,7 @@ class FarmingAnalyzer:
         if parsed.get("header") is not None:
             spawns, _competitors = self._collect_spawns(
                 parsed, options, include_static=True)
-            fighters: list[tuple[float, float, float]] = []
+            fighters: list[tuple[float, float, float, float]] = []
             weights: list[float] = []
             for spawn in spawns:
                 active = [(probability, profile)
@@ -537,10 +722,14 @@ class FarmingAnalyzer:
                           if "passive" not in profile.flags]
                 weights.append(sum(probability * profile.danger
                                    for probability, profile in active))
+                present = sum(probability for probability, _profile in active)
+                if present <= 0.0:
+                    fighters.append((0.0, 0.0, 0.0, 0.0))
+                    continue
                 dps = sum(probability * profile.damage_second
-                          for probability, profile in active)
+                          for probability, profile in active) / present
                 kill = sum(probability * profile.kill_seconds
-                           for probability, profile in active)
+                           for probability, profile in active) / present
                 # An unkillable monster with a damaging attack never stops.
                 bonus = sum(
                     probability * (profile.danger - profile.damage_taken)
@@ -548,7 +737,7 @@ class FarmingAnalyzer:
                     if math.isfinite(profile.damage_taken))
                 if not math.isfinite(kill) and dps > 0.0:
                     bonus = math.inf
-                fighters.append((dps, kill if math.isfinite(kill) else 0.0, bonus))
+                fighters.append((present, dps, kill if math.isfinite(kill) else 0.0, bonus))
             best_pack: list[int] = []
             pack_danger = 0.0
             for target in spawns:
@@ -585,25 +774,47 @@ class FarmingAnalyzer:
     def _apply_approach(self, result: MapResult, options: AnalysisOptions) -> None:
         """Find the least dangerous authored approach from an origin.
 
-        A bottleneck search walks backwards from the spot's maps and minimizes
-        the most dangerous map crossed, then the number of maps, then the path
-        names for determinism. A savebed or --approach-origin map is where the
-        character starts and is free; a surface tile is charged its own
-        danger because the character must cross it to use its entrance.
+        The search runs over (map, walkable component) nodes, so an exit only
+        counts from tiles the character can actually stand next to. It walks
+        backwards from the components holding the spot's spawns and minimizes
+        the most dangerous map crossed, then the number of nodes, then the
+        node names for determinism. Savebed and --approach-origin origins are
+        where the character starts and are free; a town-connected surface
+        component is charged its map's danger because the character must
+        cross it to use its entrance.
         """
         if not options.model_approach:
             return
-        predecessors, surface, savebeds = self._links()
+        nodes = self._world().nodes
         explicit = {
-            key for key in map(self.resolve_map_key, options.approach_origins)
+            (key, label)
+            for key in map(self.resolve_map_key, options.approach_origins)
             if key is not None
+            for label in set(self._components(key).values())
         }
-        free = explicit if options.approach_origins_only else savebeds | explicit
-        charged = frozenset() if options.approach_origins_only else surface - free
-        origins = free | charged
+        free = explicit if options.approach_origins_only else (
+            self._savebed_nodes() | explicit)
+
+        def is_origin(node: tuple[str, int]) -> bool:
+            return node in free or (
+                not options.approach_origins_only and self._surface_origin(node))
+
         map_prefix = self.map_root.relative_to(self.root).as_posix()
-        members = {"/" + path.removeprefix(map_prefix + "/") for path in result.map_paths}
-        if members & origins:
+
+        def key_of(path: str) -> str:
+            return "/" + path.removeprefix(map_prefix + "/")
+
+        member_maps = {key_of(path) for path in result.map_paths} & set(nodes)
+        targets = {
+            (key_of(path), label)
+            for path, x, y in result.spawn_points
+            if key_of(path) in nodes
+            for label in self._land(key_of(path), x, y)
+        } or {
+            (key, label) for key in member_maps
+            for label in set(self._components(key).values())
+        }
+        if any(is_origin(node) for node in targets):
             result.approach_status = "origin"
             return
         use_packs = options.max_health > 0.0
@@ -612,39 +823,44 @@ class FarmingAnalyzer:
             threat = self._approach_threat(key, options)
             return threat.pack_danger if use_packs else threat.spawn_danger
 
-        heap: list[tuple[float, int, tuple[str, ...], str]] = [
-            (0.0, 0, (), member) for member in sorted(members)]
-        # A map popped again with fewer hops may still reach an origin within
-        # the limit, so prune by hops rather than settling maps once.
-        best_hops: dict[str, int] = {}
+        heap: list[tuple[float, int, tuple[tuple[str, int], ...], tuple[str, int]]] = [
+            (0.0, 0, (), node) for node in sorted(targets)]
+        # A node popped again with fewer hops may still reach an origin within
+        # the limit, so prune by hops rather than settling nodes once.
+        best_hops: dict[tuple[str, int], int] = {}
         found = None
         while heap:
             bottleneck, hops, path, node = heapq.heappop(heap)
-            if node in origins:
+            if is_origin(node):
                 found = bottleneck, path, node
                 break
             if hops >= best_hops.get(node, math.inf):
                 continue
             best_hops[node] = hops
-            for previous in predecessors.get(node, ()):
-                if previous in members or previous in path:
+            for previous in self._predecessors(node):
+                if previous in targets or previous in path:
                     continue
-                if previous in origins:
-                    cost = metric(previous) if previous in charged else 0.0
+                if is_origin(previous):
+                    cost = 0.0 if previous in free else metric(previous[0])
                     heapq.heappush(heap, (max(bottleneck, cost), hops, path, previous))
                 elif hops < options.max_approach_maps:
+                    # Other parts of the spot's own maps are the spot's danger.
+                    cost = 0.0 if previous[0] in member_maps else metric(previous[0])
                     heapq.heappush(heap, (
-                        max(bottleneck, metric(previous)), hops + 1,
-                        path + (previous,), previous))
+                        max(bottleneck, cost), hops + 1, path + (previous,), previous))
         if found is None:
             result.approach_status = "unreachable"
-            result.approach_danger_flags = ("approach_unknown",)
+            result.approach_unknown = True
             return
         bottleneck, path, origin = found
-        ordered = tuple(reversed(path))
-        charged_maps = ((origin,) if origin in charged else ()) + ordered
+        ordered: list[str] = []
+        for key, _label in reversed(path):
+            if key not in member_maps and (not ordered or ordered[-1] != key):
+                ordered.append(key)
+        charged_maps = ([origin[0]] if origin not in free else []) + [
+            key for key in dict.fromkeys(ordered) if key != origin[0]]
         result.approach_status = "path"
-        result.approach_origin = map_prefix + origin
+        result.approach_origin = map_prefix + origin[0]
         result.approach_maps = tuple(map_prefix + key for key in ordered)
         result.approach_danger = bottleneck
         survival_level = max(options.player_level, options.character_level)
