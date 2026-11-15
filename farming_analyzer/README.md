@@ -250,8 +250,10 @@ the maps the search reaches and cached. A character can move:
   the map root when it starts with `/`. Stairs without `slaying` use
   `last_heal` (9 up, 10 down, or a horizontal direction) to pick the tiled
   map and keep their own position; an exit without `slaying` but with
-  `hp`/`sp` moves within its own map. Paired `sub_type` exits, scripts, keys
-  and locks are not followed; doors count as open;
+  `hp`/`sp` moves within its own map. An auto-linked exit (no path, `hp`/`sp`
+  of -1, non-zero `sub_type`) may lead to any exit of the same `sub_type`
+  within five tiles, including on tiled neighbours, as `exit_find()` does.
+  Scripts, keys and locks are not followed; doors count as open;
 - across a tiled map edge or corner from an edge tile to the walkable tile
   beyond it. Tiling follows `derive_map_filename_tiles()` in classic
   `server/src/server/map.c`: header `tile_path_N` (direction `N - 1`) wins,
@@ -268,8 +270,8 @@ Origins are components:
   map is an error. `--approach-origins-only` uses only these, for example
   "I start from my savebed";
 - town-connected surface components (charged). Surface components (depth-0
-  `world_X_Y` tiles) are grouped by walking seams between surface tiles
-  only. A group is town-connected when one of its components holds a
+  `world_X_Y` tiles) are grouped once, with union-find over seams between
+  surface tiles in either direction. A group is town-connected when one of its components holds a
   savebed or is joined by an exit to or from a savebed map, such as an inn
   door. Islets, ship-only islands, and surface pockets entered only from
   below are therefore not origins. A charged surface origin costs its map's
@@ -286,7 +288,9 @@ with fewer crossings, so a long safe path cannot block a shorter one that
 fits the limit. Other components of the spot's own maps are free and are not
 listed, because the spot's safety already covers them.
 
-Each crossed map is charged for its worst aggressive encounter, reusing the
+Each crossed component is charged for its map's worst aggressive encounter
+among the spawns standing in that component (a spawn with no walkable tile
+nearby is charged in every component), reusing the
 spot's monster, damage, hit-chance, kill-time and protection model. Spawns
 whose own detection radius reaches one pull point fight together. That pack
 is charged by sequential exposure: every living monster keeps attacking until
@@ -303,7 +307,7 @@ aggressive spawn is charged instead, matching the relative per-monster
 safety model. Directly placed monsters count even without
 `--include-static`, because they are present when a traveller loads the
 map. Passive monsters are skipped. AoE is not credited on the approach.
-Each map's threat is cached for the current options.
+Threats are cached per map and component for the current options.
 
 The approach safety uses the same reference as the spot: `max_health /
 approach_danger` with `--max-health`, otherwise the least dangerous eligible
@@ -591,5 +595,7 @@ circuit, and the two-tile Forgotten Graveyard circuit. A synthetic world checks
 that a safe circuit behind a dangerous entry map loses safety and reports
 approach flags, while the same circuit behind a safe entry is unchanged, and
 covers exits, tile paths, tiling, origins, and the bounded search. When the
-content checkout is present, a Sera-like level 36 profile checks the
-Underground City entrance's slime cluster.
+content checkout is present, `UndergroundCityEntranceTest` checks a
+Sera-like level 36 profile against the Underground City entrance's slime
+cluster and approach routes. It is skipped without that checkout, so CI,
+which checks out only this repository, does not run it.

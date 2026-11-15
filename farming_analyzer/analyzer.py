@@ -86,11 +86,11 @@ class FarmingAnalyzer:
         self._component_cache: dict[str, dict[tuple[int, int], int]] = {}
         self._edge_cache: dict[str, tuple[tuple[int, str, int, bool], ...]] = {}
         self._predecessor_cache: dict[tuple[str, int], tuple[tuple[str, int], ...]] = {}
-        self._surface_region: dict[tuple[str, int], int] = {}
-        self._region_has_town: list[bool] = []
-        self._town_nodes: frozenset[tuple[str, int]] | None = None
+        self._surface_groups: dict[tuple[str, int], tuple[str, int]] = {}
+        self._town_groups: frozenset[tuple[str, int]] | None = None
         self._threat_options: AnalysisOptions | None = None
-        self._threat_cache: dict[str, ApproachThreat] = {}
+        self._threat_cache: dict[tuple[str, int | None], ApproachThreat] = {}
+        self._spawn_cache: dict[str, list[SpawnProfile]] = {}
         self._npc_factions = self._load_npc_factions()
         self.rejections: list[tuple[str, str]] = []
 
@@ -379,7 +379,8 @@ class FarmingAnalyzer:
                         node.exits.append((
                             x, y, self._resolve_map_path(key, slaying),
                             _integer(attrs.get("hp")), _integer(attrs.get("sp")),
-                            _integer(attrs.get("last_heal"))))
+                            _integer(attrs.get("last_heal")),
+                            _integer(attrs.get("sub_type"))))
                     elif parent is None and obj_type == SAVEBED_TYPE:
                         node.savebeds.append((x, y))
                     # Doors, exits, and teleporters are traversable server-side.
@@ -496,11 +497,16 @@ class FarmingAnalyzer:
             labels[(x + dx, y + dy)] for dx in (-1, 0, 1) for dy in (-1, 0, 1)
             if (x + dx, y + dy) in labels}))
 
-    def _exit_destination(self, key: str, exit_object: tuple[int, int, str | None, int, int, int]
+    def _exit_destination(self, key: str,
+                          exit_object: tuple[int, int, str | None, int, int, int, int]
                           ) -> tuple[str, int, int] | None:
-        """Resolve a placed exit like exit.c insert_map_func() and object_enter_map()."""
+        """Resolve a placed exit like exit.c insert_map_func() and object_enter_map().
+
+        Paired exits (no path, a non-zero ``sub_type``) have several possible
+        destinations and are handled by _paired_exits().
+        """
         nodes = self._world().nodes
-        x, y, destination, hp, sp, last_heal = exit_object
+        x, y, destination, hp, sp, last_heal, _sub_type = exit_object
         if destination is None:
             tiles = self._tiles(key)
             if 0 < last_heal <= len(TILE_DIRECTIONS) + 2 and last_heal - 1 in tiles:
@@ -512,6 +518,44 @@ class FarmingAnalyzer:
         if destination not in nodes:
             return None
         return destination, hp, sp
+
+    def _paired_exits(self, key: str,
+                      exit_object: tuple[int, int, str | None, int, int, int, int]
+                      ) -> tuple[tuple[str, int, int], ...]:
+        """Return the exits an auto-linked exit can teleport to.
+
+        Mirrors exit_find() in classic types/exit.c: an exit without a path
+        and with a non-zero ``sub_type`` picks a random exit of the same
+        ``sub_type`` within five tiles, across tiled neighbours via
+        get_map_from_coord(), and the character lands on that exit's tile.
+        """
+        x, y, destination, hp, sp, last_heal, sub_type = exit_object
+        if destination is not None or not sub_type or (
+                self._exit_destination(key, exit_object) is not None):
+            return ()
+        nodes = self._world().nodes
+        node = nodes[key]
+        tiles = self._tiles(key)
+        found = []
+        for dx in range(-5, 6):
+            for dy in range(-5, 6):
+                if not dx and not dy:
+                    continue
+                tx_, ty_ = x + dx, y + dy
+                tx = (tx_ >= node.width) - (tx_ < 0)
+                ty = (ty_ >= node.height) - (ty_ < 0)
+                target_key = key
+                if tx or ty:
+                    target_key = tiles.get(TILE_INDEX[(tx, ty)])
+                    if target_key is None:
+                        continue
+                    target = nodes[target_key]
+                    tx_ = tx_ - node.width if tx > 0 else target.width + tx_ if tx < 0 else tx_
+                    ty_ = ty_ - node.height if ty > 0 else target.height + ty_ if ty < 0 else ty_
+                for other in nodes[target_key].exits:
+                    if other[0] == tx_ and other[1] == ty_ and other[6] == sub_type:
+                        found.append((target_key, tx_, ty_))
+        return tuple(found)
 
     def _out_edges(self, key: str) -> tuple[tuple[int, str, int, bool], ...]:
         """Return (component, target map, target component, is_seam) moves.
@@ -530,13 +574,13 @@ class FarmingAnalyzer:
         edges: set[tuple[int, str, int, bool]] = set()
         for exit_object in node.exits:
             resolved = self._exit_destination(key, exit_object)
-            if resolved is None:
-                continue
-            destination, hp, sp = resolved
-            for source in self._land(key, exit_object[0], exit_object[1]):
-                for arrival in self._land(destination, hp, sp):
-                    if (destination, arrival) != (key, source):
-                        edges.add((source, destination, arrival, False))
+            destinations = ((resolved,) if resolved is not None else
+                            self._paired_exits(key, exit_object))
+            for destination, hp, sp in destinations:
+                for source in self._land(key, exit_object[0], exit_object[1]):
+                    for arrival in self._land(destination, hp, sp):
+                        if (destination, arrival) != (key, source):
+                            edges.add((source, destination, arrival, False))
         tiles = self._tiles(key)
         for (x, y), label in labels.items():
             if 0 < x < node.width - 1 and 0 < y < node.height - 1:
@@ -572,6 +616,8 @@ class FarmingAnalyzer:
                     resolved = self._exit_destination(key, exit_object)
                     if resolved is not None:
                         incoming[resolved[0]].add(key)
+                    for target, _x, _y in self._paired_exits(key, exit_object):
+                        incoming[target].add(key)
                 for index, target in self._tiles(key).items():
                     if index < len(TILE_DIRECTIONS):
                         incoming[target].add(key)
@@ -611,15 +657,12 @@ class FarmingAnalyzer:
 
         A town is a surface component that holds a savebed or is joined by an
         exit to or from a map that holds one, for example an inn door. Surface
-        components are grouped by walking seams between surface tiles only, so
-        islets, ship-only islands, and surface pockets entered only from
-        below do not count.
+        components are grouped once, with union-find over seams between
+        surface tiles taken in either direction, so islets, ship-only islands,
+        and surface pockets entered only from below do not count.
         """
-        _incoming, surface = self._map_index()
-        if node[0] not in surface:
-            return False
-        if self._town_nodes is None:
-            incoming, _surface = self._map_index()
+        if self._town_groups is None:
+            incoming, surface = self._map_index()
             savebed_maps = {key for key, value in self._world().nodes.items()
                             if value.savebeds}
             towns = set(self._savebed_nodes())
@@ -630,28 +673,29 @@ class FarmingAnalyzer:
                     for label, target, _target_label, _seam in self._out_edges(source):
                         if target == key:
                             towns.add((source, label))
-            self._town_nodes = frozenset(towns)
-        region = self._surface_region.get(node)
-        if region is None:
-            region = len(self._region_has_town)
-            self._region_has_town.append(False)
-            self._surface_region[node] = region
-            frontier = [node]
-            while frontier:
-                current = frontier.pop()
-                if current in self._town_nodes:
-                    self._region_has_town[region] = True
-                for label, target, target_label, seam in self._out_edges(current[0]):
-                    if not seam or label != current[1] or target not in surface:
-                        continue
-                    neighbour = (target, target_label)
-                    known = self._surface_region.get(neighbour)
-                    if known is None:
-                        self._surface_region[neighbour] = region
-                        frontier.append(neighbour)
-                    elif known != region and self._region_has_town[known]:
-                        self._region_has_town[region] = True
-        return self._region_has_town[region]
+            parent: dict[tuple[str, int], tuple[str, int]] = {}
+
+            def find(item: tuple[str, int]) -> tuple[str, int]:
+                parent.setdefault(item, item)
+                while parent[item] != item:
+                    parent[item] = parent[parent[item]]
+                    item = parent[item]
+                return item
+
+            for key in sorted(surface):
+                for label in set(self._components(key).values()):
+                    find((key, label))
+                for label, target, target_label, seam in self._out_edges(key):
+                    if seam and target in surface:
+                        left, right = find((key, label)), find((target, target_label))
+                        if left != right:
+                            parent[max(left, right)] = min(left, right)
+            self._surface_groups = {item: find(item) for item in parent}
+            self._town_groups = frozenset(
+                self._surface_groups[item] for item in towns
+                if item in self._surface_groups)
+        group = self._surface_groups.get(node)
+        return group is not None and group in self._town_groups
 
     def resolve_map_key(self, path: str) -> str | None:
         """Resolve a user-supplied map path to an authored map, or None.
@@ -692,8 +736,13 @@ class FarmingAnalyzer:
         total += sum(item[3] for item in fighters if item[1] <= 0.0)
         return total
 
-    def _approach_threat(self, key: str, options: AnalysisOptions) -> ApproachThreat:
+    def _approach_threat(self, key: str, options: AnalysisOptions,
+                         component: int | None = None) -> ApproachThreat:
         """Measure the worst aggressive encounter met while crossing one map.
+
+        With ``component``, only spawns standing in (or, when blocked, next
+        to) that walkable component are charged; a spawn with no walkable
+        tile nearby is charged everywhere, conservatively.
 
         Every hostile spawn point and directly placed monster is included,
         whatever --include-static says, because a traveller meets them when
@@ -705,15 +754,22 @@ class FarmingAnalyzer:
         if self._threat_options != options:
             self._threat_options = options
             self._threat_cache = {}
-        cached = self._threat_cache.get(key)
+            self._spawn_cache = {}
+        cached = self._threat_cache.get((key, component))
         if cached is not None:
             return cached
         threat = ApproachThreat(0.0, 0.0, 0, ())
-        path = self.map_root / key.lstrip("/")
-        parsed = parse_blocks(path) if path.is_file() else {"header": None}
-        if parsed.get("header") is not None:
-            spawns, _competitors = self._collect_spawns(
-                parsed, options, include_static=True)
+        spawns = self._spawn_cache.get(key)
+        if spawns is None:
+            path = self.map_root / key.lstrip("/")
+            parsed = parse_blocks(path) if path.is_file() else {"header": None}
+            spawns = [] if parsed.get("header") is None else self._collect_spawns(
+                parsed, options, include_static=True)[0]
+            self._spawn_cache[key] = spawns
+        if component is not None and key in self._world().nodes:
+            spawns = [spawn for spawn in spawns
+                      if component in (self._land(key, spawn.x, spawn.y) or (component,))]
+        if spawns:
             fighters: list[tuple[float, float, float, float]] = []
             weights: list[float] = []
             for spawn in spawns:
@@ -768,7 +824,7 @@ class FarmingAnalyzer:
                 pack_danger, max(weights, default=0.0), max(levels, default=0),
                 tuple(f"{flag}×{amount:g}" for flag, amount in sorted(
                     flag_counts.items(), key=lambda item: (-item[1], item[0]))))
-        self._threat_cache[key] = threat
+        self._threat_cache[(key, component)] = threat
         return threat
 
     def _apply_approach(self, result: MapResult, options: AnalysisOptions) -> None:
@@ -819,8 +875,8 @@ class FarmingAnalyzer:
             return
         use_packs = options.max_health > 0.0
 
-        def metric(key: str) -> float:
-            threat = self._approach_threat(key, options)
+        def metric(node: tuple[str, int]) -> float:
+            threat = self._approach_threat(node[0], options, node[1])
             return threat.pack_danger if use_packs else threat.spawn_danger
 
         heap: list[tuple[float, int, tuple[tuple[str, int], ...], tuple[str, int]]] = [
@@ -841,11 +897,11 @@ class FarmingAnalyzer:
                 if previous in targets or previous in path:
                     continue
                 if is_origin(previous):
-                    cost = 0.0 if previous in free else metric(previous[0])
+                    cost = 0.0 if previous in free else metric(previous)
                     heapq.heappush(heap, (max(bottleneck, cost), hops, path, previous))
                 elif hops < options.max_approach_maps:
                     # Other parts of the spot's own maps are the spot's danger.
-                    cost = 0.0 if previous[0] in member_maps else metric(previous[0])
+                    cost = 0.0 if previous[0] in member_maps else metric(previous)
                     heapq.heappush(heap, (
                         max(bottleneck, cost), hops + 1, path + (previous,), previous))
         if found is None:
@@ -857,33 +913,31 @@ class FarmingAnalyzer:
         for key, _label in reversed(path):
             if key not in member_maps and (not ordered or ordered[-1] != key):
                 ordered.append(key)
-        charged_maps = ([origin[0]] if origin not in free else []) + [
-            key for key in dict.fromkeys(ordered) if key != origin[0]]
+        charged = ([origin] if origin not in free else []) + [
+            node for node in dict.fromkeys(reversed(path)) if node[0] not in member_maps]
         result.approach_status = "path"
         result.approach_origin = map_prefix + origin[0]
         result.approach_maps = tuple(map_prefix + key for key in ordered)
         result.approach_danger = bottleneck
         survival_level = max(options.player_level, options.character_level)
+        allowed = survival_level + options.max_level_gap
         flags: Counter[str] = Counter()
         worst = None
-        for key in charged_maps:
-            threat = self._approach_threat(key, options)
-            if worst is None or metric(key) > metric(worst):
-                worst = key
+        level_flags: dict[str, None] = {}
+        for node in charged:
+            threat = self._approach_threat(node[0], options, node[1])
+            if worst is None or metric(node) > metric(worst):
+                worst = node
             for rendered in threat.flags:
                 label, _separator, amount = rendered.rpartition("×")
                 flags[label] += _number(amount, 1.0)
+            if threat.max_level > allowed:
+                level_flags[f"{Path(node[0]).name} L{threat.max_level} > allowed L{allowed}"] = None
         if worst is not None and metric(worst) > 0.0:
-            result.approach_worst_map = map_prefix + worst
-        level_flags = tuple(
-            f"{Path(key).name} L{self._approach_threat(key, options).max_level} > "
-            f"allowed L{survival_level + options.max_level_gap}"
-            for key in charged_maps
-            if self._approach_threat(key, options).max_level >
-            survival_level + options.max_level_gap)
+            result.approach_worst_map = map_prefix + worst[0]
         result.approach_danger_flags = tuple(
             f"{flag}×{amount:g}" for flag, amount in sorted(
-                flags.items(), key=lambda item: (-item[1], item[0]))) + level_flags
+                flags.items(), key=lambda item: (-item[1], item[0]))) + tuple(level_flags)
 
     def _maneuverability(
             self, relpath: str,

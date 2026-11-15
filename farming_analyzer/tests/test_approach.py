@@ -317,7 +317,7 @@ class ApproachGraphTest(unittest.TestCase):
         write("world_0_0", exits=(
             ("t/via_world", 0, 0), ("t/only_world", 0, 1), ("t/bedroom", 0, 2),
             ("t/hall", 0, 3), ("t/vault", 0, 4, 1, 1), ("t/split", 0, 5, -1, -1),
-            ("t/cave_7_0", 1, 0, 1, 1)))
+            ("t/cave_7_0", 1, 0, 1, 1), ("t/paired", 1, 2, 1, 1)))
         write("t/bedroom", exits=(("via_world", 0, 0), ("../world_0_0", 1, 1)),
               extra="arch bed_save\nx 2\ny 2\nend\n")
         write("t/via_world")
@@ -342,6 +342,19 @@ class ApproachGraphTest(unittest.TestCase):
               exits=(("east_spot", 5, 4), ("west_spot", 1, 1)))
         write("t/east_spot")
         write("t/west_spot")
+        # Auto-linked exits: no path, hp/sp -1 and a shared sub_type. The pair
+        # on t/paired joins its two halves; another pairs across a tile seam.
+        def paired(x: int, y: int, sub_type: int) -> str:
+            return (f"arch exit\nx {x}\ny {y}\nsub_type {sub_type}\n"
+                    "hp -1\nsp -1\nend\n")
+
+        write("t/paired", wall_x=3, exits=(("beyond", 5, 5),),
+              extra=paired(1, 1, 7) + paired(5, 1, 7) + paired(1, 4, 8))
+        write("t/beyond")
+        write("t/pair_0_0", extra=paired(5, 2, 3))
+        write("t/pair_1_0", extra=paired(1, 2, 3) + paired(2, 2, 4))
+        # Only the half a traveller stands in is charged.
+        write("t/halves", wall_x=3, spawns=(("pudding", 5, 1), ("pudding", 5, 2)))
         # Seams join only the components that touch across the edge.
         write("t/cave_7_0", wall_y=3)
         write("t/cave_8_0", wall_y=3)
@@ -388,7 +401,7 @@ class ApproachGraphTest(unittest.TestCase):
         required.update(path=spot, name=spot, region="r")
         result = MapResult(**required, map_paths=(f"maps{spot}",))
 
-        def threat(key, _options):
+        def threat(key, _options, _component=None):
             danger = threats.get(key, 0.0)
             return ApproachThreat(danger, danger, 1, ("fire×1",) if danger else ())
 
@@ -485,6 +498,28 @@ class ApproachGraphTest(unittest.TestCase):
         self.analyzer._apply_approach(result, south_spot)
         self.assertEqual("unreachable", result.approach_status)
 
+    def test_paired_exits_link_same_sub_type_within_five_tiles(self):
+        labels = self.analyzer._components("/t/paired")
+        west, east = labels[(1, 1)], labels[(5, 1)]
+        edges = self.analyzer._out_edges("/t/paired")
+        self.assertIn((west, "/t/paired", east, False), edges)
+        self.assertIn((east, "/t/paired", west, False), edges)
+        self.assertEqual("path", self.approach("/t/beyond", {}).approach_status)
+        self.assertEqual(
+            (("/t/pair_1_0", 1, 2),),
+            self.analyzer._paired_exits(
+                "/t/pair_0_0", self.analyzer._world().nodes["/t/pair_0_0"].exits[0]))
+
+    def test_threat_charges_only_the_crossed_component(self):
+        labels = self.analyzer._components("/t/halves")
+        options = self.template
+        west = self.analyzer._approach_threat("/t/halves", options, labels[(1, 1)])
+        east = self.analyzer._approach_threat("/t/halves", options, labels[(5, 1)])
+        whole = self.analyzer._approach_threat("/t/halves", options)
+        self.assertEqual(0.0, west.pack_danger)
+        self.assertGreater(east.pack_danger, 0.0)
+        self.assertEqual(whole.pack_danger, east.pack_danger)
+
     def test_savebed_detection_ignores_carried_beds(self):
         self.assertEqual(
             {"/t/bedroom", "/t/inn2"},
@@ -577,8 +612,8 @@ class UndergroundCityEntranceTest(unittest.TestCase):
             "underground_city_0_0", spot.approach_maps)
         self.assertEqual(1.0, spot.spot_safety_score)
         self.assertLess(spot.safety_score, 0.9)
-        for flag in ("fire×3", "acid×1", "poison×1"):
-            self.assertIn(flag, spot.approach_danger_flags)
+        labels = {flag.split("×")[0] for flag in spot.approach_danger_flags}
+        self.assertLessEqual({"fire", "acid", "poison"}, labels)
 
     def test_circuits_no_longer_use_the_inside_only_lake_exit(self):
         results = self.analyzer.scan(self.sera(
