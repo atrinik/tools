@@ -442,9 +442,11 @@ likely than not to join. Those beyond the ordinary reach arrive half-way
 through.
 
 A target the character cannot hurt (infinite kill time, for example a
-fire-only character against a fire-immune monster) makes the pull **not
-farmable**. Its need is infinite and the map's encounter safety 0, and a
-`not farmable` reason names the monster. Spreads, calls and arrival times
+fire-only character against a fire-immune monster) that is aggressive and
+deals damage makes the pull **not farmable**. Its need is infinite and the
+map's encounter safety 0, and a `not farmable` reason names the monster. An
+unkillable monster that is passive or deals no damage is left alone: it is
+never pulled, and a `left alone` reason names it. Spreads, calls and arrival times
 for such a pull use a 120-second horizon so nothing overflows.
 
 **The clear.** Pulls are taken easiest first. After each pull its expected
@@ -477,8 +479,12 @@ only where there is kite room, and only while escape directions stay open.
 Each attacker beyond the first is assumed to close one of eight
 directions, so a slow monster's uptime is `1 - kite room x max(0, 1 -
 (attackers - 1) / 8)`. Nine or more attackers hit a kiter as hard as a
-melee character. Stepping away costs attack time: the kill takes `1 +
-monster speed / player speed` times longer. A monster at least as fast as
+melee character. Stepping away costs attack time: the kill takes `1 + open
+directions x monster speed / player speed` times longer, where open
+directions is the same `max(0, 1 - (attackers - 1) / 8)`, so a pinned kiter
+pays no stepping-away time. Each pull is also costed standing and fighting
+the same monsters, and a kiting style takes the cheaper of the two, so
+kiting never costs more than standing for the same pack. A monster at least as fast as
 the character, and every caster or archer, hits at full rate in every
 style. A small slow pack is therefore cheap for a kiter and expensive for a
 melee healer, while a huge pack is not safe for either.
@@ -573,9 +579,11 @@ renamed or removed fields bump `schema_version`.
 - `warnings`: missing server sources that degraded the model (see above).
 - `reference_character`, `styles` (name to description), `rating_scale`:
   `easy` ≥ 0.85, `fair` ≥ 0.65, `hard` ≥ 0.40, `deadly` > 0, `lethal` 0.
-- `maps[]`, one per map with at least one hostile spawn-point monster
-  active at `--time`, or a hostile directly placed monster with
-  `--include-static`:
+- `maps[]`, one per map with at least one attackable monster (not
+  friendly, `no_attack` or invulnerable, with no faction or the `monsters`
+  faction) on a spawn
+  point active at `--time`, passive ones included, or such a directly
+  placed monster with `--include-static`:
   - `path` (content-relative), `name`, `region`, `width`, `height`,
     `monster_levels` `{min, max, average}`, `levels` (bands rated);
   - `terrain`: `walkable_tiles`, `walkable_fraction`, `regions`,
@@ -635,8 +643,9 @@ safety and the report. Planned next steps, in order of value:
    wander boxes, doorways) and per-edit re-rating.
 8. **Server parity**: resolve faction alliance parents for ally calls and
    halve detection for authored sleeping or blind monsters.
-9. **CI**: run the analyzer suite in `Check` with pinned classic server
-   source and content checkouts.
+9. **CI**: run the analyzer suite in `Check`, adding a locked
+   `atrinik/classic` `server/src` checkout next to the existing locked
+   content checkout.
 
 ## Profiles, rankings, diagnostics, and training
 
@@ -883,8 +892,10 @@ are flagged as fire casters; and a whole-content scan of a fire-only
 character, against fire-immune monsters, finishes with those maps marked
 not farmable. It is content-dependent, so it asserts ranges and orderings,
 and it is skipped with a `CONTENT-DEPENDENT` reason without the checkout.
-The analyzer suite needs the classic server source and content checkouts
-and is not part of CI yet.
+The analyzer suite needs the classic server source and content checkouts,
+so it is not part of CI yet. That is deferred scope, not a limitation:
+`check.yml` already checks out content pinned by a lock, and a locked
+`atrinik/classic` `server/src` checkout can be added the same way.
 
 Run the focused regression suite from the repository root:
 

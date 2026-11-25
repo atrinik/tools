@@ -207,10 +207,16 @@ class EncounterEstimateTest(unittest.TestCase):
             self.assertEqual(0.0, enc.safety_from_need(built.need, 300.0))
             self.assertTrue(any("not farmable" in line
                                 for line in enc.reasons(built, options, 300.0)))
-        # An immune target that cannot hurt is still not farmable.
-        harmless, _options = model([spawn(10, 10, kill_seconds=math.inf, dps=0.0),
-                                    spawn(12, 12, **wander)])
-        self.assertTrue(math.isinf(harmless.need))
+        # An immune monster that cannot hurt, or will not attack, is left
+        # alone: it is never pulled and does not make the map lethal.
+        for harmless_target in (spawn(10, 10, kill_seconds=math.inf, dps=0.0),
+                                spawn(10, 10, kill_seconds=math.inf, aggressive=0.0)):
+            harmless, options = model([harmless_target, spawn(12, 12, **wander),
+                                       spawn(20, 20)])
+            self.assertTrue(math.isfinite(harmless.need))
+            self.assertNotIn(0, {pull.target for pull in harmless.pulls})
+            self.assertTrue(any("left alone" in line
+                                for line in enc.reasons(harmless, options, 300.0)))
         self.assertEqual(enc.FIGHT_HORIZON, enc.horizon(math.inf))
         self.assertEqual(enc.FIGHT_HORIZON, enc.horizon(math.nan))
 
@@ -235,6 +241,37 @@ class EncounterEstimateTest(unittest.TestCase):
         self.assertAlmostEqual(0.1, enc.melee_uptime(slow, options, 0.9, 1.0))
         self.assertAlmostEqual(0.55, enc.melee_uptime(slow, options, 0.9, 5.0))
         self.assertEqual(1.0, enc.melee_uptime(slow, options, 0.9, 9.0))
+
+    def test_kiting_never_costs_more_than_standing_and_fighting(self):
+        # The same pack, costed as a kiter and as a melee character: stepping
+        # away must not make a pinned or cramped kiter pay more.
+        for engaged_speed in (0.5, 4.0, 7.5):
+            for room in (0.05, 0.5, 0.9):
+                for size in (1, 2, 5, 9, 20, 36):
+                    pack = [(spawn(0, 0, engaged_speed=engaged_speed), 1.0, 0.0)
+                            for _ in range(size)]
+                    melee = enc.EncounterOptions(enc.style_profiles()["melee"], 2.0, 8.0)
+                    stand = enc._cheaper_pull(pack, melee, room, size, 1.0)
+                    for style in ("ranged-kite", "aoe-kite"):
+                        kite = enc._cheaper_pull(
+                            pack, replace(melee, style=enc.style_profiles()[style]),
+                            room, size, 1.0)
+                        self.assertLessEqual(kite, stand + 1e-6,
+                                             (style, engaged_speed, room, size))
+        # Pinned (nine or more attackers): no stepping-away time is charged.
+        options = enc.EncounterOptions(enc.style_profiles()["ranged-kite"], 0.0, 8.0)
+        self.assertEqual(1.0, enc.kite_attack_share(spawn(0, 0), options, 0.9, 9.0))
+
+    def test_hordes_cost_a_kiter_no_more_than_melee(self):
+        # Every monster of a 20 or 36 block is in each style's bad pull.
+        for columns, rows in ((5, 4), (6, 6)):
+            horde = [spawn(x, y) for x in range(4, 4 + columns) for y in range(4, 4 + rows)]
+            melee, _options = model(horde)
+            self.assertEqual(columns * rows, melee.worst_pack)
+            for style, aoe in (("ranged-kite", 1.0), ("aoe-kite", 4.0)):
+                kite, _options = model(horde, style=style, aoe=aoe)
+                self.assertEqual(melee.worst_pack, kite.worst_pack, style)
+                self.assertLessEqual(kite.worst_need, melee.worst_need, style)
 
     def test_static_monsters_neither_call_nor_answer(self):
         caller = dict(link_chance=1 / 6, faction="monsters", link_group="pack")

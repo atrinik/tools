@@ -47,7 +47,7 @@ positions are not modelled.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Iterable
 
 # Server constants mirrored as documented data (include/global.h 175-179).
@@ -493,8 +493,23 @@ class EncounterModel:
 
 
 def fight_seconds(spawn: EncounterSpawn, options: EncounterOptions,
-                  room: float) -> float:
-    return spawn.kill_seconds / kite_attack_share(spawn, options, room)
+                  room: float, attackers: float = 1.0) -> float:
+    return spawn.kill_seconds / kite_attack_share(spawn, options, room, attackers)
+
+
+def open_directions(attackers: float) -> float:
+    """Share of escape directions still open: each attacker beyond the
+    first closes one of ``KITE_ESCAPE_DIRECTIONS``."""
+    return max(0.0, 1.0 - max(0.0, attackers - 1.0) / KITE_ESCAPE_DIRECTIONS)
+
+
+def unkillable(spawn: EncounterSpawn) -> bool:
+    return not math.isfinite(spawn.kill_seconds)
+
+
+def unkillable_harmless(spawn: EncounterSpawn) -> bool:
+    """Cannot be killed, but is passive or deals no damage: skip it."""
+    return unkillable(spawn) and (spawn.aggressive <= 0.0 or spawn.dps <= 0.0)
 
 
 def horizon(seconds: float) -> float:
@@ -521,18 +536,24 @@ def melee_uptime(spawn: EncounterSpawn, options: EncounterOptions,
         return 1.0
     if options.player_speed <= 0.0 or spawn.engaged_speed >= options.player_speed:
         return 1.0
-    open_directions = max(0.0, 1.0 - max(0.0, attackers - 1.0) / KITE_ESCAPE_DIRECTIONS)
-    return 1.0 - room * open_directions
+    return 1.0 - room * open_directions(attackers)
 
 
 def kite_attack_share(spawn: EncounterSpawn, options: EncounterOptions,
-                      room: float) -> float:
-    """Share of time a kiter spends attacking rather than stepping away."""
+                      room: float, attackers: float = 1.0) -> float:
+    """Share of time a kiter spends attacking rather than stepping away.
+
+    Stepping away costs ``monster speed / player speed`` of the attack time,
+    but only while the kiter can still step away: the penalty shrinks with
+    the open escape directions, so a pack that pins the kiter costs the same
+    time as standing and fighting.
+    """
     if not options.style.kites or spawn.shoots or options.player_speed <= 0.0:
         return 1.0
     if spawn.engaged_speed >= options.player_speed:
         return 1.0
-    return 1.0 / (1.0 + spawn.engaged_speed / options.player_speed)
+    return 1.0 / (1.0 + open_directions(attackers) *
+                  spawn.engaged_speed / options.player_speed)
 
 
 def _join_probability(spawn: EncounterSpawn, x: int, y: int, reach: int,
@@ -602,7 +623,11 @@ def estimate(spawns: list[EncounterSpawn], walkable: set[tuple[int, int]],
                 spawn.component = around[0] if len(around) == 1 else None
     style = options.style
     room = terrain.kite_room
-    own = [index for index, spawn in enumerate(spawns) if spawn.own_map]
+    # A monster the character cannot kill and that cannot hurt or will not
+    # attack is left alone: it is never pulled. An unkillable monster that
+    # attacks and hurts makes its pull (and so the map) not farmable.
+    own = [index for index, spawn in enumerate(spawns)
+           if spawn.own_map and not unkillable_harmless(spawn)]
     alive = [1.0] * len(spawns)
     # First pass: every pull on the fully populated map, to order the clear.
     first = {index: _best_pull(index, spawns, alive, walkable, labels, options, room)
@@ -684,23 +709,16 @@ def _best_pull(index: int, spawns: list[EncounterSpawn], alive: list[float],
             best = (key, x, y, joiners, worst, expected)
     assert best is not None
     _key, x, y, joiners, worst, expected = best
-    crowd = expected
-    lead = _fighter(target, 1.0, 0.0, options, room, crowd)
-    expected_fighters = [lead]
+    expected_fighters = [(target, 1.0, 0.0)]
     for other, start, extra in joiners:
         if start > 0.0:
-            expected_fighters.append(
-                _fighter(spawns[other], start, 0.0, options, room, crowd))
+            expected_fighters.append((spawns[other], start, 0.0))
         if extra > 0.0:
-            expected_fighters.append(
-                _fighter(spawns[other], extra, late, options, room, crowd))
-    need = pull_need(expected_fighters, options.healing, targets)
-    bad_crowd = 1.0 + len(worst)
-    worst_need = pull_need(
-        [_fighter(target, 1.0, 0.0, options, room, bad_crowd)] +
-        [_fighter(spawns[other], 1.0, arrival, options, room, bad_crowd)
-         for other, arrival in worst],
-        options.healing, targets)
+            expected_fighters.append((spawns[other], extra, late))
+    need = _cheaper_pull(expected_fighters, options, room, expected, targets)
+    worst_need = _cheaper_pull(
+        [(target, 1.0, 0.0)] + [(spawns[other], 1.0, arrival) for other, arrival in worst],
+        options, room, 1.0 + len(worst), targets)
     if not farmable:
         # The character cannot kill the target: not a farmable pull.
         need = worst_need = math.inf
@@ -740,8 +758,30 @@ def _fighter(spawn: EncounterSpawn, probability: float, arrival: float,
     return Fighter(
         probability,
         spawn.dps * melee_uptime(spawn, options, room, attackers),
-        fight_seconds(spawn, options, room),
+        fight_seconds(spawn, options, room, attackers),
         spawn.bonus, arrival)
+
+
+def _cheaper_pull(fighters: list[tuple[EncounterSpawn, float, float]],
+                  options: EncounterOptions, room: float, attackers: float,
+                  targets: float) -> float:
+    """Health trough of a pull; a kiter stands and fights when that is cheaper.
+
+    ``fighters`` are (spawn, probability, arrival). For a kiting style the
+    same pack is also costed standing still (full uptime, no stepping-away
+    time) and the cheaper of the two is taken, so kiting never costs more
+    than standing and fighting the same monsters.
+    """
+    kite = pull_need([_fighter(spawn, probability, arrival, options, room, attackers)
+                      for spawn, probability, arrival in fighters],
+                     options.healing, targets)
+    if not options.style.kites:
+        return kite
+    standing = replace(options, style=replace(options.style, kites=False))
+    stand = pull_need([_fighter(spawn, probability, arrival, standing, room, attackers)
+                       for spawn, probability, arrival in fighters],
+                      options.healing, targets)
+    return min(kite, stand)
 
 
 def _worst_joins(other: EncounterSpawn, x: int, y: int, component: int | None,
@@ -973,9 +1013,14 @@ def reasons(model: EncounterModel, options: EncounterOptions,
                 f"{hardest.worst_need:.0f}); up to {alive_dps:.1f} DPS in against "
                 f"{options.healing:g} HP/s healing")
     immune = sorted({spawns[index].name for index in own
-                     if not math.isfinite(spawns[index].kill_seconds)})
+                     if unkillable(spawns[index]) and not unkillable_harmless(spawns[index])})
     if immune:
         lines.insert(1, "not farmable: the character cannot kill " + ", ".join(immune))
+    skipped = sorted({spawns[index].name for index in own
+                      if unkillable_harmless(spawns[index])})
+    if skipped:
+        lines.append("left alone (cannot be killed, passive or harmless): "
+                     + ", ".join(skipped))
     wanderers = [index for index in aggressive if spawns[index].wander_tiles]
     if wanderers:
         lines.append(f"{len(wanderers)} aggressive wanderer(s) roam the map")
