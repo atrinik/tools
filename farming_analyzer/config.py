@@ -30,6 +30,8 @@ SPAWN_POINT_MOB_TYPE = 83
 RANDOM_DROP_TYPE = 102
 EXIT_TYPE = 66
 SAVEBED_TYPE = 106
+# Monster spell abilities; ``sp`` is the index into the server spell table.
+ABILITY_TYPE = 110
 GEAR_TYPES = {
     3, 13, 14, 15, 16, 33, 34, 35, 39, 70, 87, 99, 100, 104, 109, 113,
 }

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .analyzer import FarmingAnalyzer
 from .config import ATTACK_TYPES, PHYSICAL_ATTACKS, ROOT, SERVER_ROOT
+from .encounter import STYLE_NAMES
 from .models import AnalysisOptions
 from .presentation import (
     group_farming_results,
@@ -16,6 +17,9 @@ from .presentation import (
     parse_time,
     render_text,
 )
+
+
+SCHEMA_VERSION = 2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -132,6 +136,15 @@ def build_parser() -> argparse.ArgumentParser:
                         help="cap safety (0..1) of spots with no authored approach; default: no cap")
     parser.add_argument("--ignore-approach", dest="model_approach", action="store_false",
                         help="score only the spot's own maps, not the maps crossed to reach it")
+    parser.add_argument("--combat-style", choices=STYLE_NAMES, default="",
+                        help="character's combat style; makes the encounter model part of "
+                             "safety_score (default: report it without changing safety)")
+    parser.add_argument("--healing-per-second", type=float, default=0.0,
+                        help="HP healed per second while fighting, for encounter safety (default: 0)")
+    parser.add_argument("--kite-distance", type=int, default=4,
+                        help="tiles a kiting style moves around its pull square (default: 4)")
+    parser.add_argument("--ignore-encounters", dest="model_encounters", action="store_false",
+                        help="skip the encounter model and its fields")
     parser.add_argument("--include-static", action="store_true",
                         help="include monsters that only return after map reset/unload")
     parser.add_argument("--json", action="store_true", help="emit machine-readable results")
@@ -173,6 +186,9 @@ def simulate_training(analyzer: FarmingAnalyzer, options: AnalysisOptions,
 
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if raw_argv[:1] == ["report"]:
+        from .report import main as report_main
+        return report_main(raw_argv[1:])
     profile_parser = argparse.ArgumentParser(add_help=False)
     profile_parser.add_argument("--profile", type=Path)
     profile_args, _unknown = profile_parser.parse_known_args(raw_argv)
@@ -272,6 +288,12 @@ def main(argv: list[str] | None = None) -> int:
     if (args.unreachable_approach_safety is not None and
             not (0.0 <= args.unreachable_approach_safety <= 1.0)):
         raise SystemExit("unreachable-approach-safety must be between 0 and 1")
+    if args.healing_per_second < 0.0:
+        raise SystemExit("healing per second cannot be negative")
+    if not (1 <= args.kite_distance <= 12):
+        raise SystemExit("kite-distance must be between 1 and 12")
+    if args.combat_style and not args.model_encounters:
+        raise SystemExit("--combat-style requires the encounter model; drop --ignore-encounters")
     if args.approach_origins_only and not args.approach_origin:
         raise SystemExit("--approach-origins-only requires at least one --approach-origin")
     unknown_origins = [
@@ -334,6 +356,10 @@ def main(argv: list[str] | None = None) -> int:
         max_approach_maps=args.max_approach_maps,
         approach_origins_only=args.approach_origins_only,
         unreachable_approach_safety=args.unreachable_approach_safety,
+        combat_style=args.combat_style,
+        healing_per_second=args.healing_per_second,
+        kite_distance=args.kite_distance,
+        model_encounters=args.model_encounters,
     )
     results = analyzer.scan(options)
     initial_rejections = list(analyzer.rejections)
@@ -362,13 +388,16 @@ def main(argv: list[str] | None = None) -> int:
         if options.simulate_melee:
             assumptions["dps"] = None
         payload = {
+            # 2 adds the encounter-model fields; every version-1 field keeps
+            # its name, type and meaning unless --combat-style is supplied.
+            "schema_version": SCHEMA_VERSION,
             "assumptions": assumptions,
             "kill_xp_cap": analyzer.experience.kill_cap(args.level),
             "score_weights": {"xp_hour": 0.40, "money_hour": 0.15,
                               "loot_hour": 0.10, "safety": 0.25,
                               "maneuverability": 0.10},
             "results": [asdict(result) for result in results[:args.top]],
-            "warnings": sorted(analyzer.treasure.warnings),
+            "warnings": sorted(analyzer.treasure.warnings | analyzer.source_warnings),
             "training": training,
         }
         if options.group_results:
@@ -410,6 +439,8 @@ def main(argv: list[str] | None = None) -> int:
             results, options, args.top, analyzer.experience,
             analyzer.treasure.warnings,
             initial_rejections if args.explain_rejected else None)
+        for warning in sorted(analyzer.source_warnings):
+            rendered += f"\nWarning: {warning}"
         if training:
             rendered += "\n\nTraining simulation:"
             for stage in training:
