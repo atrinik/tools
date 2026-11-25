@@ -175,6 +175,11 @@ def render_text(results: list[MapResult], options: AnalysisOptions, limit: int,
         f"Time {options.at_minute // 60:02d}:{options.at_minute % 60:02d}; {offense}; "
         f"spawn-check overhead {options.seconds_per_kill:g}s; "
         f"map overhead {options.seconds_per_map:g}s",
+        (f"Combat style: {options.combat_style}; healing {options.healing_per_second:g} HP/s"
+         f"{f', kite distance {options.kite_distance}' if 'kite' in options.combat_style else ''}; "
+         "spot safety is the lower of the danger x pack estimate and the encounter model"
+         if options.combat_style else
+         "Combat style: not supplied; encounter fields describe melee but do not change safety"),
         f"Safety target: character L{options.character_level}, AC {options.player_ac}, "
         f"protections {', '.join(f'{name}={amount}%' for name, amount in options.player_protections) or 'none'}; "
         f"HP {f'{options.max_health:g}' if options.max_health > 0.0 else 'not supplied'}",
@@ -321,6 +326,23 @@ def render_text(results: list[MapResult], options: AnalysisOptions, limit: int,
             f"   danger: {', '.join(result.danger_flags) or 'ordinary melee'}; "
             f"sources: {', '.join(result.sources)}",
         ))
+        if result.encounter_style:
+            x, y = result.encounter_pull[1], result.encounter_pull[2]
+            lines.append(
+                f"   encounter ({result.encounter_style}"
+                f"{'' if result.encounter_applied else ', not applied: pass --combat-style'}): "
+                f"hardest pull at {Path(result.encounter_pull[0]).name} ({x}, {y}) expects "
+                f"~{result.expected_pack:.1f} attackers (mean {result.mean_expected_pack:.1f}, "
+                f"bad pull {result.worst_pack:g}); costs ~{result.encounter_need:.0f} HP "
+                f"(bad pull {result.encounter_worst_need:.0f}); safety "
+                f"{result.encounter_safety * 100.0:.0f}% "
+                f"(expected {result.encounter_expected_safety * 100.0:.0f}%, "
+                f"bad pull {result.encounter_worst_safety * 100.0:.0f}%); "
+                f"{result.wanderer_spawns:g} wanderer(s), {result.caster_spawns:g} caster(s), "
+                f"{result.ranged_spawns:g} archer(s), {result.doorways} doorway(s), "
+                f"{result.seam_spawns} spawn(s) across seams")
+            for reason in result.encounter_reasons[1:4]:
+                lines.append(f"     - {reason}")
         if result.approach_status == "path":
             lines.append(
                 f"   approach: {len(result.approach_maps)} map(s) from "

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .config import (
+    ABILITY_TYPE,
     CONSUMABLE_TYPES,
     EXIT_TYPE,
     GEAR_TYPES,
@@ -25,6 +26,7 @@ from .config import (
     SPAWN_POINT_TYPE,
     STATUS_ATTACK_TYPES,
 )
+from . import encounter as enc
 from .experience import ExperienceModel
 from .models import (
     AnalysisOptions,
@@ -92,6 +94,15 @@ class FarmingAnalyzer:
         self._threat_cache: dict[tuple[str, int | None], ApproachThreat] = {}
         self._spawn_cache: dict[str, list[SpawnProfile]] = {}
         self._npc_factions = self._load_npc_factions()
+        self._signal_chances: tuple[int, ...] | None = None
+        self._spell_table: tuple[tuple[str, str], ...] | None = None
+        self._encounter_options: AnalysisOptions | None = None
+        # Option-independent walkable tiles, seam crossings and terrain.
+        self._terrain_cache: dict[str, tuple[
+            set[tuple[int, int]], dict[int, set[tuple[int, int]]],
+            enc.TerrainStructure]] = {}
+        self._encounter_spawn_cache: dict[
+            tuple[str, bool], tuple[list[SpawnProfile], list[CompetitorProfile]]] = {}
         self.rejections: list[tuple[str, str]] = []
 
     def _load_npc_factions(self) -> set[str]:
@@ -152,6 +163,61 @@ class FarmingAnalyzer:
                     "attrs": attrs,
                     "def_arch": definition,
                 }
+
+    def _signal_table(self) -> tuple[int, ...]:
+        """Read monster_signal_chance[] from classic server/living.c.
+
+        Entry ``n`` for a monster's Int means a one in ``n`` chance per AI
+        action to wake allies; zero means never (types/monster.c 363-366).
+        """
+        if self._signal_chances is None:
+            values: tuple[int, ...] = ()
+            path = self.server_root / "server" / "living.c"
+            if path.is_file():
+                match = re.search(
+                    r"monster_signal_chance\[[^\]]*\]\s*=\s*\{(.*?)\};",
+                    path.read_text(errors="replace"), re.S)
+                if match:
+                    body = re.sub(r"//[^\n]*|/\*.*?\*/", "", match.group(1), flags=re.S)
+                    values = tuple(int(item) for item in re.findall(r"-?\d+", body))
+            self._signal_chances = values
+        return self._signal_chances
+
+    def _spells(self) -> tuple[tuple[str, str], ...]:
+        """Read (name, cast archetype) for each spell index from spellist.h.
+
+        Monster ``ability`` objects (type 110) name a spell by its index in
+        that table through ``sp``; the cast archetype's ``attack_*`` values
+        give the damage types.
+        """
+        if self._spell_table is None:
+            table: list[tuple[str, str]] = []
+            path = self.server_root / "include" / "spellist.h"
+            if path.is_file():
+                source = path.read_text(errors="replace")
+                start = source.find("spells[NROFREALSPELLS]")
+                end = source.find("};", start)
+                body = source[source.find("{", start) + 1:end] if start >= 0 else ""
+                depth = 0
+                entry = ""
+                for character in body:
+                    if character == "{":
+                        depth += 1
+                        entry = ""
+                        continue
+                    if character == "}":
+                        depth -= 1
+                        tokens = re.findall(r'"([^"]*)"|\bNULL\b', entry)
+                        if len(tokens) >= 2:
+                            # id, name, ..., sound, cast archetype, extra.
+                            names = re.findall(r'"[^"]*"|\bNULL\b', entry)
+                            arch = names[-2].strip('"') if len(names) >= 4 else ""
+                            table.append((tokens[1], "" if arch == "NULL" else arch))
+                        continue
+                    if depth:
+                        entry += character
+            self._spell_table = tuple(table)
+        return self._spell_table
 
     def _constant(self, name: str, default: int) -> int:
         source = (self.server_root / "include" / "config.h").read_text(errors="replace")
@@ -1332,7 +1398,7 @@ class FarmingAnalyzer:
         for profile in profiles:
             loot += profile.loot * (1.0 / count)
         flags = tuple(sorted(set(flag for profile in profiles for flag in profile.flags)))
-        return MonsterProfile(
+        profile = MonsterProfile(
             node["arch"], profiles[0].name, round(sum(p.level for p in profiles) / count),
             sum(p.xp for p in profiles) / count,
             sum(p.hp for p in profiles) / count,
@@ -1353,6 +1419,52 @@ class FarmingAnalyzer:
             loot, flags,
             sum(p.attacks_to_kill for p in profiles) / count,
         )
+        self._encounter_traits(node, attrs, profile)
+        return profile
+
+    def _encounter_traits(self, node: dict, attrs: dict[str, str],
+                          profile: MonsterProfile) -> None:
+        """Fill the level-independent encounter inputs of a monster."""
+        profile.intelligence = max(0, _integer(attrs.get("int")))
+        profile.faction = attrs.get("faction", "") or ""
+        # set_mobile_speed(): 2x authored speed idle, 4x (3x slow_move) with
+        # an enemy; one tile per action, MAX_TIME seconds per tick.
+        base = abs(_number(attrs.get("speed")))
+        if attrs.get("stand_still") == "1":
+            profile.engaged_speed = 0.0
+            profile.idle_speed = 0.0
+        else:
+            engaged = 3.0 if attrs.get("slow_move") == "1" else 4.0
+            profile.engaged_speed = base * engaged / self.tick_seconds
+            profile.idle_speed = base * 2.0 / self.tick_seconds
+        if attrs.get("random_move") == "1" and attrs.get("stand_still") != "1":
+            limit_x = _integer(attrs.get("item_race"))
+            limit_y = _integer(attrs.get("item_level"))
+            # move_randomly() only limits the walk when either is set.
+            profile.wander = ((-1, -1) if limit_x == 0 and limit_y == 0
+                              else (max(0, limit_x), max(0, limit_y)))
+        profile.attack_types = tuple(sorted(
+            attack for attack in SERVER_ATTACK_TYPES
+            if _integer(attrs.get(f"attack_{attack}")) > 0))
+        if attrs.get("can_cast_spell") == "1":
+            table = self._spells()
+            names = []
+            types: set[str] = set()
+            for child in node.get("children", []):
+                child_attrs = merged_attrs(child, self.archetypes)
+                if _integer(child_attrs.get("type")) != ABILITY_TYPE:
+                    continue
+                index = _integer(child_attrs.get("sp"))
+                if not 0 <= index < len(table):
+                    continue
+                name, cast_arch = table[index]
+                names.append(name)
+                cast_attrs = self.archetypes.get(cast_arch, {}).get("attrs", {})
+                types.update(
+                    attack for attack in SERVER_ATTACK_TYPES
+                    if _integer(cast_attrs.get(f"attack_{attack}")) > 0)
+            profile.spells = tuple(sorted(set(names)))
+            profile.spell_types = tuple(sorted(types))
 
     def _monster_at_level(self, node: dict, attrs: dict[str, str], level: int,
                           options: AnalysisOptions) -> MonsterProfile:
@@ -1500,7 +1612,8 @@ class FarmingAnalyzer:
         return SpawnProfile(
             normalized, respawn, "spawn",
             _integer(attrs.get("x")), _integer(attrs.get("y")), aggressive,
-            attempt_seconds, attempt_probability)
+            attempt_seconds, attempt_probability,
+            link_group=attrs.get("title", "") or "")
 
     def _static_monster(self, node: dict, map_difficulty: int,
                         reset_timeout: int, options: AnalysisOptions) -> SpawnProfile | None:
@@ -1641,6 +1754,213 @@ class FarmingAnalyzer:
                     spawns.append(spawn)
         return spawns, competitors
 
+    def _spawns_cached(
+            self, key: str, options: AnalysisOptions, include_static: bool,
+    ) -> tuple[list[SpawnProfile], list[CompetitorProfile]]:
+        """Collect a map's spawns once per option set (own and neighbour maps)."""
+        if self._encounter_options != options:
+            self._encounter_options = options
+            self._encounter_spawn_cache = {}
+        cache_key = (key, include_static)
+        cached = self._encounter_spawn_cache.get(cache_key)
+        if cached is None:
+            path = self.map_root / key.lstrip("/")
+            parsed = parse_blocks(path) if path.is_file() else {"header": None}
+            cached = (([], []) if parsed.get("header") is None else
+                      self._collect_spawns(parsed, options, include_static=include_static))
+            self._encounter_spawn_cache[cache_key] = cached
+        return cached
+
+    def _encounter_spawn(self, spawn: SpawnProfile, key: str,
+                         offset: tuple[int, int], own_map: bool) -> enc.EncounterSpawn:
+        """Convert one spawn into the encounter model's frame of reference."""
+        candidates = spawn.candidates
+        total = sum(probability for probability, _profile in candidates) or 1.0
+
+        def average(attr: str) -> float:
+            return sum(probability * getattr(profile, attr)
+                       for probability, profile in candidates) / total
+
+        dominant = max(candidates, key=lambda item: item[0])[1]
+        kills = [profile.kill_seconds for _probability, profile in candidates]
+        kill_seconds = average("kill_seconds") if all(map(math.isfinite, kills)) else math.inf
+        bonus = sum(probability * max(0.0, profile.danger - profile.damage_taken)
+                    for probability, profile in candidates
+                    if math.isfinite(profile.damage_taken)) / total
+        signals = self._signal_table()
+
+        def link(profile: MonsterProfile) -> float:
+            intelligence = min(profile.intelligence, len(signals) - 1)
+            chance = signals[intelligence] if signals and intelligence >= 0 else 0
+            return 1.0 / chance if chance > 0 else 0.0
+
+        ox, oy = offset
+        nodes = self._world().nodes
+        node = nodes.get(key)
+        wander_tiles: frozenset[tuple[int, int]] = frozenset()
+        box = None
+        if dominant.wander is not None and node is not None:
+            limit_x, limit_y = dominant.wander
+            x0, x1 = ((0, node.width - 1) if limit_x < 0 else
+                      (max(0, spawn.x - limit_x), min(node.width - 1, spawn.x + limit_x)))
+            y0, y1 = ((0, node.height - 1) if limit_y < 0 else
+                      (max(0, spawn.y - limit_y), min(node.height - 1, spawn.y + limit_y)))
+            labels = self._components(key)
+            home = set(self._land(key, spawn.x, spawn.y)) if (
+                0 <= spawn.x < node.width and 0 <= spawn.y < node.height) else set()
+            wander_tiles = frozenset(
+                (x + ox, y + oy) for x in range(x0, x1 + 1) for y in range(y0, y1 + 1)
+                if labels.get((x, y)) in home)
+            box = (x0 + ox, y0 + oy, x1 + ox, y1 + oy) if wander_tiles else None
+        caster = any("caster" in profile.flags for _p, profile in candidates)
+        ranged = any("ranged" in profile.flags for _p, profile in candidates)
+        damage_types = set(dominant.spell_types) if caster else set()
+        if ranged:
+            damage_types.add("missile")
+        return enc.EncounterSpawn(
+            x=spawn.x + ox, y=spawn.y + oy, name=dominant.name,
+            level=round(average("level")), aggressive=spawn.aggressive_probability,
+            radius=round(average("aggro_radius")), dps=average("damage_second"),
+            kill_seconds=kill_seconds, bonus=bonus,
+            map_path=self.map_root.relative_to(self.root).as_posix() + key,
+            local_x=spawn.x, local_y=spawn.y, own_map=own_map,
+            link_chance=sum(probability * link(profile)
+                            for probability, profile in candidates) / total,
+            link_group=spawn.link_group, faction=dominant.faction,
+            engaged_speed=average("engaged_speed"), idle_speed=average("idle_speed"),
+            wander_box=box, wander_tiles=wander_tiles,
+            caster=caster, ranged=ranged, damage_types=tuple(sorted(damage_types)),
+            spells=dominant.spells, melee_types=dominant.attack_types)
+
+    # Neighbour spawns this many tiles beyond the map edge can still reach it.
+    ENCOUNTER_MARGIN = 12
+
+    def _encounter_frame(
+            self, key: str, own_spawns: list[SpawnProfile], options: AnalysisOptions,
+    ) -> tuple[list[enc.EncounterSpawn], set[tuple[int, int]],
+               dict[int, set[tuple[int, int]]]]:
+        """Own spawns plus tiled neighbours' spawns shifted into this map's frame."""
+        nodes = self._world().nodes
+        node = nodes[key]
+        walkable, seams, _terrain = self._encounter_terrain(key)
+        spawns = [self._encounter_spawn(spawn, key, (0, 0), True) for spawn in own_spawns]
+        margin = self.ENCOUNTER_MARGIN
+
+        def outside(x: int, y: int) -> int:
+            return max(max(0, -x, x - (node.width - 1)), max(0, -y, y - (node.height - 1)))
+
+        for direction, neighbour in sorted(self._tiles(key).items()):
+            if direction >= len(TILE_DIRECTIONS):
+                continue
+            other = nodes[neighbour]
+            dx, dy = TILE_DIRECTIONS[direction]
+            ox = node.width if dx > 0 else (-other.width if dx < 0 else 0)
+            oy = node.height if dy > 0 else (-other.height if dy < 0 else 0)
+            neighbour_spawns, _competitors = self._spawns_cached(
+                neighbour, options, options.include_static)
+            for spawn in neighbour_spawns:
+                converted = self._encounter_spawn(spawn, neighbour, (ox, oy), False)
+                near = outside(converted.x, converted.y) <= margin or any(
+                    outside(x, y) <= margin for x, y in converted.wander_tiles)
+                if near:
+                    spawns.append(converted)
+        return spawns, walkable, seams
+
+    def _encounter_terrain(self, key: str) -> tuple[
+            set[tuple[int, int]], dict[int, set[tuple[int, int]]], enc.TerrainStructure]:
+        """Walkable tiles, crossable seam tiles by direction, and terrain of a map."""
+        cached = self._terrain_cache.get(key)
+        if cached is not None:
+            return cached
+        nodes = self._world().nodes
+        node = nodes[key]
+        walkable = {(x, y) for y in range(node.height) for x in range(node.width)
+                    if node.walkable(x, y)}
+        seams: dict[int, set[tuple[int, int]]] = {}
+        for direction, neighbour in sorted(self._tiles(key).items()):
+            if direction >= 4:
+                continue
+            other = nodes[neighbour]
+            dx, dy = TILE_DIRECTIONS[direction]
+            crossing = set()
+            if dy:
+                own_y = 0 if dy < 0 else node.height - 1
+                far_y = other.height - 1 if dy < 0 else 0
+                for x in range(min(node.width, other.width)):
+                    if node.walkable(x, own_y) and other.walkable(x, far_y):
+                        crossing.add((x, own_y))
+            else:
+                own_x = 0 if dx < 0 else node.width - 1
+                far_x = other.width - 1 if dx < 0 else 0
+                for y in range(min(node.height, other.height)):
+                    if node.walkable(own_x, y) and other.walkable(far_x, y):
+                        crossing.add((own_x, y))
+            seams[direction] = crossing
+        terrain = enc.analyze_terrain(node.width, node.height, walkable, seams)
+        self._terrain_cache[key] = (walkable, seams, terrain)
+        return self._terrain_cache[key]
+
+    def map_encounter(self, key: str, own_spawns: list[SpawnProfile],
+                      options: AnalysisOptions, style: str | None = None,
+                      aoe_targets: float | None = None) -> enc.EncounterModel | None:
+        """Build the encounter model of one map for a combat style."""
+        nodes = self._world().nodes
+        if key not in nodes or not own_spawns:
+            return None
+        spawns, walkable, _seams = self._encounter_frame(key, own_spawns, options)
+        terrain = self._encounter_terrain(key)[2]
+        return enc.estimate(spawns, walkable, terrain,
+                            self.encounter_options(options, style, aoe_targets))
+
+    def encounter_options(self, options: AnalysisOptions, style: str | None = None,
+                          aoe_targets: float | None = None) -> enc.EncounterOptions:
+        """Encounter inputs for a style; player speed defaults to 1.0 (8 tiles/s)."""
+        profile = enc.style_profiles(options.kite_distance)[
+            style or options.combat_style or "melee"]
+        return enc.EncounterOptions(
+            profile, options.healing_per_second,
+            (options.character_speed or 1.0) / self.tick_seconds,
+            max(1.0, aoe_targets if aoe_targets is not None else options.targets_per_attack))
+
+    def _apply_encounter(self, result: MapResult, key: str, spawns: list[SpawnProfile],
+                         options: AnalysisOptions) -> None:
+        if not options.model_encounters:
+            return
+        model = self.map_encounter(
+            key, spawns, options, aoe_targets=result.effective_targets_per_attack)
+        if model is None:
+            return
+        encounter_options = self.encounter_options(
+            options, aoe_targets=result.effective_targets_per_attack)
+        own = [model.spawns[index] for index in model.own]
+        result.encounter_style = model.style
+        result.encounter_applied = bool(options.combat_style)
+        result.expected_pack = model.expected_pack
+        result.mean_expected_pack = model.mean_expected_pack
+        result.worst_pack = model.worst_pack
+        result.encounter_need = model.need
+        result.encounter_worst_need = model.worst_need
+        hardest = model.hardest()
+        if hardest is not None:
+            result.encounter_pull = (result.path, hardest.x, hardest.y)
+        result.encounter_reasons = tuple(
+            enc.reasons(model, encounter_options, options.max_health))
+        result.wanderer_spawns = sum(
+            spawn.aggressive for spawn in own if spawn.wander_tiles)
+        result.caster_spawns = float(sum(1 for spawn in own if spawn.caster))
+        result.ranged_spawns = float(sum(1 for spawn in own if spawn.ranged))
+        result.linking_spawns = float(sum(1 for spawn in own if spawn.link_chance > 0.0))
+        result.spawn_density = 100.0 * len(own) / max(1, model.terrain.walkable_tiles)
+        result.doorways = len(model.terrain.doorways)
+        result.seam_spawns = len(enc.seam_reachers(model))
+        if options.max_health > 0.0:
+            result.encounter_expected_safety = enc.safety_from_need(
+                model.need, options.max_health)
+            result.encounter_worst_safety = enc.bad_pull_safety(
+                model.worst_need, options.max_health)
+            result.encounter_safety = enc.blended_safety(
+                result.encounter_expected_safety, result.encounter_worst_safety)
+
     def analyze_map(self, path: Path, options: AnalysisOptions) -> MapResult | None:
         relpath = str(path.relative_to(self.root))
         parsed = parse_blocks(path)
@@ -1651,6 +1971,11 @@ class FarmingAnalyzer:
         difficulty = _integer(one(header_attrs, "difficulty", 1), 1)
         spawns, competitors = self._collect_spawns(
             parsed, options, include_static=options.include_static)
+        map_key = "/" + path.relative_to(self.map_root).as_posix()
+        if self._encounter_options != options:
+            self._encounter_options = options
+            self._encounter_spawn_cache = {}
+        self._encounter_spawn_cache[(map_key, options.include_static)] = (spawns, competitors)
         if len(spawns) < options.minimum_spawns:
             self.rejections.append((relpath,
                                     f"{len(spawns)} spawns < minimum {options.minimum_spawns}"))
@@ -1796,7 +2121,7 @@ class FarmingAnalyzer:
                 monster_counts[f"{profile.name} L{profile.level}"] += probability
                 for flag in profile.flags:
                     flag_counts[flag] += probability
-        return MapResult(
+        result = MapResult(
             relpath, one(header_attrs, "name", path.name) or path.name,
             one(header_attrs, "region", "") or "", difficulty, count, xp, xp / count,
             hp, effective_hp, hp / count, damage / count, danger, respawn_seconds,
@@ -1845,6 +2170,8 @@ class FarmingAnalyzer:
             min_monster_level=min_monster_level,
             avg_monster_level=avg_monster_level,
         )
+        self._apply_encounter(result, map_key, spawns, options)
+        return result
 
     @staticmethod
     def _coordinate_key(result: MapResult) -> tuple[str, str, int, int, int] | None:
@@ -2011,7 +2338,40 @@ class FarmingAnalyzer:
             min_monster_level=min(member.min_monster_level for member in members),
             avg_monster_level=sum(
                 member.avg_monster_level * member.spawns for member in members) / count,
+            **FarmingAnalyzer._combine_encounters(members, count),
         )
+
+    @staticmethod
+    def _combine_encounters(members: list[MapResult], count: float) -> dict:
+        """A circuit is as hard as its hardest map's hardest pull."""
+        hardest = max(members, key=lambda member: (
+            member.encounter_need, member.encounter_worst_need, member.expected_pack))
+        return {
+            "encounter_style": members[0].encounter_style,
+            "encounter_applied": members[0].encounter_applied,
+            "expected_pack": max(member.expected_pack for member in members),
+            "mean_expected_pack": sum(
+                member.mean_expected_pack * member.spawns for member in members) / count,
+            "worst_pack": max(member.worst_pack for member in members),
+            "encounter_need": max(member.encounter_need for member in members),
+            "encounter_worst_need": max(member.encounter_worst_need for member in members),
+            "encounter_safety": min(member.encounter_safety for member in members),
+            "encounter_expected_safety": min(
+                member.encounter_expected_safety for member in members),
+            "encounter_worst_safety": min(
+                member.encounter_worst_safety for member in members),
+            "encounter_pull": hardest.encounter_pull,
+            "encounter_reasons": tuple(
+                f"{Path(hardest.path).name}: {line}" for line in hardest.encounter_reasons),
+            "wanderer_spawns": sum(member.wanderer_spawns for member in members),
+            "caster_spawns": sum(member.caster_spawns for member in members),
+            "ranged_spawns": sum(member.ranged_spawns for member in members),
+            "linking_spawns": sum(member.linking_spawns for member in members),
+            "spawn_density": sum(
+                member.spawn_density * member.spawns for member in members) / count,
+            "doorways": sum(member.doorways for member in members),
+            "seam_spawns": sum(member.seam_spawns for member in members),
+        }
 
     def _circuits(self, maps: list[MapResult], options: AnalysisOptions) -> list[MapResult]:
         if options.circuit_size < 2:
@@ -2064,6 +2424,24 @@ class FarmingAnalyzer:
         }
         finite_dangers = [result.danger for result in results if math.isfinite(result.danger)]
         safest = min(finite_dangers) if finite_dangers else 1.0
+        if options.max_health <= 0.0:
+            # Without a health bar, encounter safety is relative to the
+            # cheapest pull of the scan, like the per-monster danger.
+            def reference(attr: str) -> float:
+                needs = [getattr(result, attr) for result in results
+                         if math.isfinite(getattr(result, attr)) and getattr(result, attr) > 0.0]
+                return min(needs) if needs else 1.0
+
+            least, least_worst = reference("encounter_need"), reference("encounter_worst_need")
+            for result in results:
+                result.encounter_expected_safety = (
+                    min(1.0, least / result.encounter_need) if result.encounter_need > 0.0
+                    else 1.0)
+                result.encounter_worst_safety = (
+                    min(1.0, least_worst / result.encounter_worst_need)
+                    if result.encounter_worst_need > 0.0 else 1.0)
+                result.encounter_safety = enc.blended_safety(
+                    result.encounter_expected_safety, result.encounter_worst_safety)
         for result in results:
             if options.max_health > 0.0:
                 result.health_clear_fraction = result.damage_clear / options.max_health
@@ -2085,6 +2463,10 @@ class FarmingAnalyzer:
             else:
                 safety = (min(1.0, safest / max(result.danger, 0.001))
                           if math.isfinite(result.danger) else 0.0)
+            if options.combat_style and options.model_encounters:
+                # The style-aware encounter replaces the saturated
+                # danger x pack estimate when it is the stricter of the two.
+                safety = min(safety, result.encounter_safety)
             result.spot_safety_score = safety
             if result.approach_status == "path":
                 # Approach maps use the same health budget, or the same

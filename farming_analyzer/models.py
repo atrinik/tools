@@ -30,6 +30,19 @@ class MonsterProfile:
     loot: Loot
     flags: tuple[str, ...]
     attacks_to_kill: float = 0.0
+    # Encounter-model inputs that do not depend on level: stats.Int, the
+    # faction used for ally signals, movement in tiles per second while
+    # fighting and while idle, the random_move limits (-1 = unbounded,
+    # None = does not wander), melee attack types, and spells with the
+    # attack types of what they cast.
+    intelligence: int = 0
+    faction: str = ""
+    engaged_speed: float = 0.0
+    idle_speed: float = 0.0
+    wander: tuple[int, int] | None = None
+    attack_types: tuple[str, ...] = ()
+    spells: tuple[str, ...] = ()
+    spell_types: tuple[str, ...] = ()
 
 
 @dataclass
@@ -42,6 +55,8 @@ class SpawnProfile:
     aggressive_probability: float = 0.0
     attempt_seconds: float = math.inf
     attempt_probability: float = 0.0
+    # Spawn points sharing a ``title`` always answer each other's signals.
+    link_group: str = ""
 
     def weighted(self, attr: str) -> float:
         return sum(probability * getattr(profile, attr) for probability, profile in self.candidates)
@@ -151,6 +166,28 @@ class MapResult:
     approach_worst_map: str = ""
     approach_danger_flags: tuple[str, ...] = ()
     approach_unknown: bool = False
+    # Encounter model (see encounter.py and the README). ``encounter_style``
+    # names the combat style the fields describe; ``encounter_applied`` says
+    # whether --combat-style made it part of safety_score.
+    encounter_style: str = ""
+    encounter_applied: bool = False
+    expected_pack: float = 0.0
+    mean_expected_pack: float = 0.0
+    worst_pack: float = 0.0
+    encounter_need: float = 0.0
+    encounter_worst_need: float = 0.0
+    encounter_safety: float = 1.0
+    encounter_expected_safety: float = 1.0
+    encounter_worst_safety: float = 1.0
+    encounter_pull: tuple[str, int, int] = ("", 0, 0)
+    encounter_reasons: tuple[str, ...] = ()
+    wanderer_spawns: float = 0.0
+    caster_spawns: float = 0.0
+    ranged_spawns: float = 0.0
+    linking_spawns: float = 0.0
+    spawn_density: float = 0.0
+    doorways: int = 0
+    seam_spawns: int = 0
 
 
 @dataclass(frozen=True)
@@ -204,6 +241,13 @@ class AnalysisOptions:
     max_approach_maps: int = 16
     approach_origins_only: bool = False
     unreachable_approach_safety: float | None = None
+    # Encounter model: the character's combat style (empty keeps the
+    # pre-encounter safety_score), healing per second while fighting, and
+    # kiting distance in tiles.
+    combat_style: str = ""
+    healing_per_second: float = 0.0
+    kite_distance: int = 4
+    model_encounters: bool = True
 
     @property
     def simulate_melee(self) -> bool:
