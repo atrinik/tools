@@ -507,9 +507,38 @@ def unkillable(spawn: EncounterSpawn) -> bool:
     return not math.isfinite(spawn.kill_seconds)
 
 
-def unkillable_harmless(spawn: EncounterSpawn) -> bool:
-    """Cannot be killed, but is passive or deals no damage: skip it."""
-    return unkillable(spawn) and (spawn.aggressive <= 0.0 or spawn.dps <= 0.0)
+def unkillable_harmless(spawn: EncounterSpawn, aoe: bool = False) -> bool:
+    """Cannot be killed, and will not hurt the character: skip it.
+
+    A passive monster is left alone by single-target styles. An AoE style
+    provokes every passive monster inside its footprint, so for AoE only a
+    monster that deals no damage is harmless.
+    """
+    if not unkillable(spawn):
+        return False
+    if aoe:
+        return spawn.dps <= 0.0
+    return spawn.aggressive <= 0.0 or spawn.dps <= 0.0
+
+
+def _provoked(other: EncounterSpawn, x: int, y: int, component: int | None,
+              style: StyleProfile) -> float:
+    """Chance an AoE fight at (x, y) hits, and so provokes, a passive monster.
+
+    AoE styles damage everything inside their footprint (the kite
+    distance), and a damaged monster turns on its attacker
+    (``types/monster.c`` 479-512, ``attacked_by`` in ``find_enemy()``).
+    The passive share of the spawn (``1 - aggressive``) joins from the
+    first second.
+    """
+    if not style.aoe or other.aggressive >= 1.0:
+        return 0.0
+    if (component is not None and other.component is not None and
+            other.component != component and not other.shoots):
+        return 0.0
+    if chebyshev(other.x, other.y, x, y) > style.footprint:
+        return 0.0
+    return 1.0 - other.aggressive
 
 
 def horizon(seconds: float) -> float:
@@ -627,7 +656,7 @@ def estimate(spawns: list[EncounterSpawn], walkable: set[tuple[int, int]],
     # attack is left alone: it is never pulled. An unkillable monster that
     # attacks and hurts makes its pull (and so the map) not farmable.
     own = [index for index, spawn in enumerate(spawns)
-           if spawn.own_map and not unkillable_harmless(spawn)]
+           if spawn.own_map and not unkillable_harmless(spawn, options.style.aoe)]
     alive = [1.0] * len(spawns)
     # First pass: every pull on the fully populated map, to order the clear.
     first = {index: _best_pull(index, spawns, alive, walkable, labels, options, room)
@@ -674,7 +703,7 @@ def _best_pull(index: int, spawns: list[EncounterSpawn], alive: list[float],
         if other_index == index or presence <= 1e-6:
             continue
         linked = _link_probability(target, other, seconds)
-        if other.aggressive <= 0.0 and linked <= 0.0:
+        if other.aggressive <= 0.0 and linked <= 0.0 and not style.aoe:
             continue
         sweep = math.sqrt(other.idle_speed * seconds) if other.wander_tiles else 0.0
         reach = max(other.radius + style.footprint + int(sweep),
@@ -689,15 +718,19 @@ def _best_pull(index: int, spawns: list[EncounterSpawn], alive: list[float],
         worst: list[tuple[int, float]] = []
         for other_index, other, presence, linked, sweep in relevant:
             reach = other.radius + style.footprint
+            provoked = presence * _provoked(other, x, y, component, style)
             start = presence * _join_probability(other, x, y, reach, 0.0, component)
             direct = (presence * _join_probability(other, x, y, reach, sweep, component)
                       if other.wander_tiles else start)
+            if provoked > 0.0:
+                start = 1.0 - (1.0 - start) * (1.0 - provoked)
+                direct = 1.0 - (1.0 - direct) * (1.0 - provoked)
             total = 1.0 - (1.0 - direct) * (1.0 - presence * linked)
             if total > 1e-6:
                 joiners.append((other_index, start, total - start))
             if presence >= PLAUSIBLE and (
                     _worst_joins(other, x, y, component, style, sweep) or
-                    linked >= PLAUSIBLE):
+                    linked >= PLAUSIBLE or provoked >= PLAUSIBLE):
                 worst.append((other_index, 0.0 if start >= PLAUSIBLE else late))
         expected = 1.0 + sum(start + extra for _other, start, extra in joiners)
         distance = chebyshev(x, y, target.x, target.y)
@@ -1013,11 +1046,12 @@ def reasons(model: EncounterModel, options: EncounterOptions,
                 f"{hardest.worst_need:.0f}); up to {alive_dps:.1f} DPS in against "
                 f"{options.healing:g} HP/s healing")
     immune = sorted({spawns[index].name for index in own
-                     if unkillable(spawns[index]) and not unkillable_harmless(spawns[index])})
+                     if unkillable(spawns[index]) and
+                     not unkillable_harmless(spawns[index], options.style.aoe)})
     if immune:
         lines.insert(1, "not farmable: the character cannot kill " + ", ".join(immune))
     skipped = sorted({spawns[index].name for index in own
-                      if unkillable_harmless(spawns[index])})
+                      if unkillable_harmless(spawns[index], options.style.aoe)})
     if skipped:
         lines.append("left alone (cannot be killed, passive or harmless): "
                      + ", ".join(skipped))

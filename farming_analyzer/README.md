@@ -445,8 +445,13 @@ A target the character cannot hurt (infinite kill time, for example a
 fire-only character against a fire-immune monster) that is aggressive and
 deals damage makes the pull **not farmable**. Its need is infinite and the
 map's encounter safety 0, and a `not farmable` reason names the monster. An
-unkillable monster that is passive or deals no damage is left alone: it is
-never pulled, and a `left alone` reason names it. Spreads, calls and arrival times
+unkillable monster that deals no damage is left alone: it is never pulled,
+and a `left alone` reason names it. Single-target styles also leave alone
+an unkillable *passive* monster. An AoE style does not: AoE damages every
+monster inside its footprint (the kite distance), and a damaged monster
+turns on its attacker (`types/monster.c` 479-512). So under `aoe-kite`,
+passive monsters inside the footprint join the pull from the first second,
+and a passive, damaging, unkillable one makes the pull not farmable. Spreads, calls and arrival times
 for such a pull use a 120-second horizon so nothing overflows.
 
 **The clear.** Pulls are taken easiest first. After each pull its expected
@@ -484,7 +489,18 @@ directions x monster speed / player speed` times longer, where open
 directions is the same `max(0, 1 - (attackers - 1) / 8)`, so a pinned kiter
 pays no stepping-away time. Each pull is also costed standing and fighting
 the same monsters, and a kiting style takes the cheaper of the two, so
-kiting never costs more than standing for the same pack. A monster at least as fast as
+kiting never costs more than standing for the same pack.
+
+Accepted limits of that comparison:
+
+- It is made within one pull only. Across styles a kiter can still rate
+  worse than melee, because the bad pulls hold different monsters: the
+  kiter's bad-pull footprint is the kite distance (4 by default) against
+  melee's 3, and its pull squares differ. On world_16_74, for example,
+  `ranged-kite` rates 0.78 against melee's 0.79.
+- The standing alternative reuses the kiting fight's timeline for the
+  wanderer spread, ally calls and late arrivals; only damage uptime and
+  kill time switch to standing. The effect is small either way. A monster at least as fast as
 the character, and every caster or archer, hits at full rate in every
 style. A small slow pack is therefore cheap for a kiter and expensive for a
 melee healer, while a huge pack is not safe for either.

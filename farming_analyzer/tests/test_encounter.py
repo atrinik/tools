@@ -242,6 +242,29 @@ class EncounterEstimateTest(unittest.TestCase):
         self.assertAlmostEqual(0.55, enc.melee_uptime(slow, options, 0.9, 5.0))
         self.assertEqual(1.0, enc.melee_uptime(slow, options, 0.9, 9.0))
 
+    def test_aoe_provokes_a_passive_immune_monster_in_its_footprint(self):
+        immune = spawn(6, 4, kill_seconds=math.inf, aggressive=0.0)
+        brutes = [spawn(4, 4), immune, spawn(20, 20)]
+        # Single-target styles leave the passive immune monster alone.
+        for style in ("melee", "ranged-kite"):
+            built, _options = model(brutes, style=style)
+            self.assertTrue(math.isfinite(built.need), style)
+        # AoE hits it, it turns on the character and cannot be killed.
+        aoe, options = model(brutes, style="aoe-kite", aoe=4.0)
+        self.assertTrue(math.isinf(aoe.need))
+        self.assertTrue(any("not farmable" in line
+                            for line in enc.reasons(aoe, options, 300.0)))
+        # A passive immune monster that deals no damage stays harmless.
+        harmless = [spawn(4, 4), spawn(6, 4, kill_seconds=math.inf, aggressive=0.0, dps=0.0)]
+        quiet, _options = model(harmless, style="aoe-kite", aoe=4.0)
+        self.assertTrue(math.isfinite(quiet.need))
+        # Killable passive monsters inside the footprint join an AoE pull.
+        passive = [spawn(4, 4), spawn(6, 4, aggressive=0.0), spawn(5, 6, aggressive=0.0)]
+        gathered, _options = model(passive, style="aoe-kite", aoe=4.0)
+        single, _options = model(passive, style="ranged-kite")
+        self.assertGreater(gathered.expected_pack, 2.5)
+        self.assertEqual(1.0, single.expected_pack)
+
     def test_kiting_never_costs_more_than_standing_and_fighting(self):
         # The same pack, costed as a kiter and as a melee character: stepping
         # away must not make a pinned or cramped kiter pay more.
