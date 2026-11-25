@@ -254,6 +254,7 @@ def build_report(analyzer: FarmingAnalyzer, args: argparse.Namespace) -> dict:
                          "deadly": "> 0", "lethal": "0"},
         "maps": result_maps,
         "zones": _zones(result_maps, styles),
+        "warnings": sorted(analyzer.source_warnings),
     }
 
 
@@ -342,6 +343,7 @@ def render_text(report: dict) -> str:
         f"HP {report['reference_character']['hp']}, healing "
         f"{report['reference_character']['healing_per_second']} HP/s)",
         "Ratings: easy >= 85% safety, fair >= 65%, hard >= 40%, deadly > 0, lethal 0.",
+        *(f"Warning: {warning}" for warning in report.get("warnings", ())),
         "",
     ]
     for zone in report["zones"]:

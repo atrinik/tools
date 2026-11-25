@@ -10,24 +10,33 @@ line in the classic server source (``classic/server/src``):
 
 - detection: an idle monster looks for an enemy within its ``item_power``
   tiles; a monster that already has an enemy or was attacked looks
-  3 tiles further (``types/monster.c`` 1084-1100, ``find_nearest_enemy``);
+  3 tiles further (``types/monster.c`` 1084-1100, ``find_nearest_enemy``).
+  Sleeping or blind monsters look half as far; that is not modelled;
 - leash: an engaged monster keeps its enemy while it stays within
   ``max(MAX_AGGRO_RANGE, item_power)`` tiles, and drops it only after
   ``MAX_AGGRO_TIME`` further checks out of range (``types/monster.c``
-  558-580, ``include/global.h`` 175-179: range 9, time 12);
-- linking: on every AI action with an enemy, a monster rolls a one in
-  ``monster_signal_chance[Int]`` chance (``server/living.c`` 154-162; zero
-  means never) to wake idle allies. Allies on spawn points with the same
-  ``title`` always answer; other allied spawns answer when they stand within
-  ``item_power * 1.5`` minus the caller's distance to its enemy
-  (``types/monster.c`` 288-345 and 351-420);
+  558-580, ``include/global.h`` 175-179: range 9, time 12). It is reported
+  as ``chase_range``; the estimate uses the style's bad-pull footprint in
+  its place;
+- linking: on every AI action with an enemy, a spawned monster rolls a one
+  in ``monster_signal_chance[Int]`` chance (``server/living.c`` 154-162;
+  zero means never) to wake idle monsters of other spawn points. Spawn
+  points with the same ``title`` always answer; others answer when their
+  monster is an ally standing within ``item_power * 1.5`` minus the
+  caller's distance to its enemy (``types/monster.c`` 288-345 and
+  351-420). A woken passive monster fights too. Directly placed monsters
+  have no spawn-point record, so they neither call nor answer. Deviation:
+  allies are monsters of the same faction; factions joined only through an
+  alliance parent (``faction_is_alliance()``, ``server/faction.c`` 645) are
+  not resolved;
 - wandering: ``random_move`` monsters step in a random direction on each
   idle action, limited to ``item_race`` tiles horizontally and
   ``item_level`` tiles vertically from their spawn when either is set
   (``types/monster.c`` 1160-1225, ``move_randomly``);
-- movement: monsters act at twice their authored speed while idle and four
-  times (three with ``slow_move``) while fighting, one tile per action
-  (the analyzer's existing ``set_mobile_speed()`` reading);
+- movement: ``set_mobile_speed()`` (``server/living.c`` 1851-1875) gives a
+  monster twice its authored speed idle and four times while fighting;
+  with ``slow_move`` once idle and three times fighting. One tile per
+  action;
 - casters and archers attack on their own AI actions from range
   (``types/monster.c`` 809-870), so stepping away does not stop them.
 
@@ -43,7 +52,20 @@ from typing import Iterable
 
 # Server constants mirrored as documented data (include/global.h 175-179).
 MAX_AGGRO_RANGE = 9
+# The server widens detection by 3 tiles only for a monster that already
+# has an enemy or an attacker (types/monster.c 1092-1094). The bad pull
+# applies the same 3 tiles to idle bystanders as a deliberate safety
+# margin for a fight that drifts, a monster that was hit and lost its
+# target, or a retreat; it has no server basis for an untouched monster.
 ENGAGED_RADIUS_BONUS = 3
+# Fight length used for wandering, ally calls and arrival times when the
+# character cannot kill the target (infinite kill time). Such a pull is not
+# farmable and costs infinite health whatever this value is.
+FIGHT_HORIZON = 120.0
+# A kiter escaping in open ground has eight directions; each pursuer beyond
+# the first is assumed to close one, so nine or more slow melee attackers
+# hit as if the character stood still.
+KITE_ESCAPE_DIRECTIONS = 8
 # Cardinal seam directions in the server's tiled-map index order.
 SEAM_NAMES = {0: "north", 1: "east", 2: "south", 3: "west"}
 
@@ -122,6 +144,8 @@ class EncounterSpawn:
     # point's ``title`` link group.
     link_chance: float = 0.0
     link_group: str = ""
+    # Spawned by a spawn point (False for a directly placed monster).
+    spawn_point: bool = True
     faction: str = ""
     # Movement in tiles per second while fighting and while idle.
     engaged_speed: float = 0.0
@@ -386,7 +410,7 @@ def analyze_terrain(width: int, height: int, walkable: set[tuple[int, int]],
             doorways.append(min(run))
     seam_counts = {}
     for direction, tiles in sorted((seams or {}).items()):
-        if direction in SEAM_NAMES:
+        if direction in SEAM_NAMES and tiles:
             seam_counts[SEAM_NAMES[direction]] = len(tiles)
     center = None
     if largest_field:
@@ -473,21 +497,32 @@ def fight_seconds(spawn: EncounterSpawn, options: EncounterOptions,
     return spawn.kill_seconds / kite_attack_share(spawn, options, room)
 
 
+def horizon(seconds: float) -> float:
+    """A finite, non-negative fight length for spreads and arrival times."""
+    if not math.isfinite(seconds):
+        return FIGHT_HORIZON
+    return max(0.0, seconds)
+
+
 def melee_uptime(spawn: EncounterSpawn, options: EncounterOptions,
-                 room: float) -> float:
+                 room: float, attackers: float = 1.0) -> float:
     """Fraction of a fight in which this monster is hitting the character.
 
     Melee styles stand next to everything. Casters and archers hit from
     range whatever the style. A kiter keeps a melee monster that is slower
-    than the character away, except when cramped ground corners it: the
-    share of walkable tiles without kite room (``1 - room``). A monster at
-    least as fast as the character cannot be kited.
+    than the character away only where there is kite room (``room``), and
+    only while escape directions stay open: each attacker beyond the first
+    closes one of ``KITE_ESCAPE_DIRECTIONS``. The avoided share is
+    ``room * max(0, 1 - (attackers - 1) / 8)``, so a pack of nine or more
+    hits as hard as it would a melee character. A monster at least as fast
+    as the character cannot be kited.
     """
     if not options.style.kites or spawn.shoots:
         return 1.0
     if options.player_speed <= 0.0 or spawn.engaged_speed >= options.player_speed:
         return 1.0
-    return 1.0 - room
+    open_directions = max(0.0, 1.0 - max(0.0, attackers - 1.0) / KITE_ESCAPE_DIRECTIONS)
+    return 1.0 - room * open_directions
 
 
 def kite_attack_share(spawn: EncounterSpawn, options: EncounterOptions,
@@ -515,14 +550,14 @@ def _join_probability(spawn: EncounterSpawn, x: int, y: int, reach: int,
 def _link_probability(caller: EncounterSpawn, other: EncounterSpawn,
                       seconds: float) -> float:
     """Chance ``caller`` wakes ``other`` during a fight of ``seconds``."""
-    if caller.link_chance <= 0.0 or other.aggressive <= 0.0:
+    if caller.link_chance <= 0.0 or not caller.spawn_point or not other.spawn_point:
         return 0.0
     if not (caller.link_group and caller.link_group == other.link_group):
         if not caller.faction or caller.faction != other.faction:
             return 0.0
         if chebyshev(caller.x, caller.y, other.x, other.y) > caller.signal_radius:
             return 0.0
-    actions = caller.engaged_speed * max(0.0, seconds)
+    actions = caller.engaged_speed * horizon(seconds)
     return 1.0 - (1.0 - caller.link_chance) ** actions
 
 
@@ -552,8 +587,8 @@ def estimate(spawns: list[EncounterSpawn], walkable: set[tuple[int, int]],
     second; wanderers that walk in later and called allies arrive, on
     average, half-way through T's fight.
 
-    The bad (worst-case) pull uses the engaged radius (+3) and the style's
-    worst footprint, and adds every wanderer and ally link that is more
+    The bad (worst-case) pull uses a 3-tile margin on every radius (see
+    ``ENGAGED_RADIUS_BONUS``) and the style's worst footprint, and adds every wanderer and ally link that is more
     likely than not to join; those beyond the ordinary reach arrive half-way
     through the fight.
     """
@@ -598,7 +633,9 @@ def _best_pull(index: int, spawns: list[EncounterSpawn], alive: list[float],
     style = options.style
     targets = options.aoe_targets if style.aoe else 1.0
     target = spawns[index]
-    seconds = fight_seconds(target, options, room)
+    raw_seconds = fight_seconds(target, options, room)
+    farmable = math.isfinite(raw_seconds)
+    seconds = horizon(raw_seconds)
     late = seconds / 2.0
     candidates = _pull_squares(target, walkable, style)
     x0 = min(x for x, _y in candidates)
@@ -609,9 +646,11 @@ def _best_pull(index: int, spawns: list[EncounterSpawn], alive: list[float],
     relevant = []
     for other_index, other in enumerate(spawns):
         presence = alive[other_index]
-        if other_index == index or other.aggressive <= 0.0 or presence <= 1e-6:
+        if other_index == index or presence <= 1e-6:
             continue
         linked = _link_probability(target, other, seconds)
+        if other.aggressive <= 0.0 and linked <= 0.0:
+            continue
         sweep = math.sqrt(other.idle_speed * seconds) if other.wander_tiles else 0.0
         reach = max(other.radius + style.footprint + int(sweep),
                     other.engaged_radius + style.worst_footprint)
@@ -645,18 +684,26 @@ def _best_pull(index: int, spawns: list[EncounterSpawn], alive: list[float],
             best = (key, x, y, joiners, worst, expected)
     assert best is not None
     _key, x, y, joiners, worst, expected = best
-    lead = _fighter(target, 1.0, 0.0, options, room)
+    crowd = expected
+    lead = _fighter(target, 1.0, 0.0, options, room, crowd)
     expected_fighters = [lead]
     for other, start, extra in joiners:
         if start > 0.0:
-            expected_fighters.append(_fighter(spawns[other], start, 0.0, options, room))
+            expected_fighters.append(
+                _fighter(spawns[other], start, 0.0, options, room, crowd))
         if extra > 0.0:
-            expected_fighters.append(_fighter(spawns[other], extra, late, options, room))
+            expected_fighters.append(
+                _fighter(spawns[other], extra, late, options, room, crowd))
     need = pull_need(expected_fighters, options.healing, targets)
+    bad_crowd = 1.0 + len(worst)
     worst_need = pull_need(
-        [lead] + [_fighter(spawns[other], 1.0, arrival, options, room)
-                  for other, arrival in worst],
+        [_fighter(target, 1.0, 0.0, options, room, bad_crowd)] +
+        [_fighter(spawns[other], 1.0, arrival, options, room, bad_crowd)
+         for other, arrival in worst],
         options.healing, targets)
+    if not farmable:
+        # The character cannot kill the target: not a farmable pull.
+        need = worst_need = math.inf
     pull = PullEstimate(
         index, x, y, expected, 1.0 + len(worst), need, worst_need,
         tuple(other for other, _start, _extra in joiners),
@@ -689,10 +736,10 @@ def _pull_squares(target: EncounterSpawn, walkable: set[tuple[int, int]],
 
 
 def _fighter(spawn: EncounterSpawn, probability: float, arrival: float,
-             options: EncounterOptions, room: float) -> Fighter:
+             options: EncounterOptions, room: float, attackers: float = 1.0) -> Fighter:
     return Fighter(
         probability,
-        spawn.dps * melee_uptime(spawn, options, room),
+        spawn.dps * melee_uptime(spawn, options, room, attackers),
         fight_seconds(spawn, options, room),
         spawn.bonus, arrival)
 
@@ -701,10 +748,13 @@ def _worst_joins(other: EncounterSpawn, x: int, y: int, component: int | None,
                  style: StyleProfile, sweep: float) -> bool:
     """Whether ``other`` belongs to the bad pull at (x, y).
 
-    A static spawn joins when its engaged radius reaches the worst
-    footprint. A wanderer joins when it is more likely than not within that
-    reach (widened by its random-walk spread) during the fight.
+    A static aggressive spawn joins when its radius plus the 3-tile margin
+    reaches the worst footprint. A wanderer joins when it is more likely
+    than not within that reach (widened by its random-walk spread) during
+    the fight.
     """
+    if other.aggressive <= 0.0:
+        return False
     if (component is not None and other.component is not None and
             other.component != component and not other.shoots):
         return False
@@ -909,7 +959,8 @@ def reasons(model: EncounterModel, options: EncounterOptions,
             f"hardest pull: {target.name} from ({hardest.x}, {hardest.y}) expects "
             f"{hardest.expected:.1f} attackers, worst {hardest.worst:g}"
             + (f" (joined by {', '.join(joined)})" if joined else ""))
-        alive_dps = sum(spawns[i].dps * melee_uptime(spawns[i], options, model.room)
+        alive_dps = sum(spawns[i].dps * melee_uptime(spawns[i], options, model.room,
+                                                     hardest.worst)
                         for i in (hardest.target,) + hardest.worst_joiners)
         if health > 0.0:
             lines.append(
@@ -921,6 +972,10 @@ def reasons(model: EncounterModel, options: EncounterOptions,
                 f"expected pull costs {hardest.need:.0f} HP (worst "
                 f"{hardest.worst_need:.0f}); up to {alive_dps:.1f} DPS in against "
                 f"{options.healing:g} HP/s healing")
+    immune = sorted({spawns[index].name for index in own
+                     if not math.isfinite(spawns[index].kill_seconds)})
+    if immune:
+        lines.insert(1, "not farmable: the character cannot kill " + ", ".join(immune))
     wanderers = [index for index in aggressive if spawns[index].wander_tiles]
     if wanderers:
         lines.append(f"{len(wanderers)} aggressive wanderer(s) roam the map")
@@ -942,12 +997,14 @@ def reasons(model: EncounterModel, options: EncounterOptions,
             slow = [index for index in melee
                     if spawns[index].engaged_speed < options.player_speed]
             if slow:
-                uptime = sum(melee_uptime(spawns[i], options, model.room)
+                crowd = hardest.expected if hardest is not None else 1.0
+                uptime = sum(melee_uptime(spawns[i], options, model.room, crowd)
                              for i in slow) / len(slow)
                 lines.append(
                     f"{len(slow)} melee spawn(s) slower than the character; kiting "
-                    f"keeps them off for {1 - uptime:.0%} of the fight "
-                    f"({model.room:.0%} of walkable tiles have kite room)")
+                    f"keeps them off for {1 - uptime:.0%} of the hardest pull "
+                    f"({model.room:.0%} of walkable tiles have kite room, "
+                    f"~{crowd:.1f} attackers closing escape directions)")
             fast = len(melee) - len(slow)
             if fast:
                 lines.append(f"{fast} melee spawn(s) as fast as the character cannot be kited")

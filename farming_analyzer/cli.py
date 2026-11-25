@@ -397,7 +397,7 @@ def main(argv: list[str] | None = None) -> int:
                               "loot_hour": 0.10, "safety": 0.25,
                               "maneuverability": 0.10},
             "results": [asdict(result) for result in results[:args.top]],
-            "warnings": sorted(analyzer.treasure.warnings),
+            "warnings": sorted(analyzer.treasure.warnings | analyzer.source_warnings),
             "training": training,
         }
         if options.group_results:
@@ -439,6 +439,8 @@ def main(argv: list[str] | None = None) -> int:
             results, options, args.top, analyzer.experience,
             analyzer.treasure.warnings,
             initial_rejections if args.explain_rejected else None)
+        for warning in sorted(analyzer.source_warnings):
+            rendered += f"\nWarning: {warning}"
         if training:
             rendered += "\n\nTraining simulation:"
             for stage in training:

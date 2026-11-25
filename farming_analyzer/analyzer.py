@@ -67,6 +67,53 @@ class ApproachThreat:
 TILE_DIRECTIONS = ((0, -1), (1, 0), (0, 1), (-1, 0), (1, -1), (1, 1), (-1, 1), (-1, -1))
 TILE_INDEX = {direction: index for index, direction in enumerate(TILE_DIRECTIONS)}
 TILED_UP, TILED_DOWN = 8, 9
+# Displayed speed assumed for the encounter model without --character-speed.
+DEFAULT_CHARACTER_SPEED = 1.0
+
+
+def read_signal_table(server_root: Path) -> tuple[int, ...]:
+    """monster_signal_chance[] from ``server/living.c``, or () when absent."""
+    path = server_root / "server" / "living.c"
+    if not path.is_file():
+        return ()
+    match = re.search(r"monster_signal_chance\[[^\]]*\]\s*=\s*\{(.*?)\};",
+                      path.read_text(errors="replace"), re.S)
+    if not match:
+        return ()
+    body = re.sub(r"//[^\n]*|/\*.*?\*/", "", match.group(1), flags=re.S)
+    return tuple(int(item) for item in re.findall(r"-?\d+", body))
+
+
+def read_spell_table(server_root: Path) -> tuple[tuple[str, str], ...]:
+    """(name, cast archetype) per spell index from ``include/spellist.h``."""
+    path = server_root / "include" / "spellist.h"
+    if not path.is_file():
+        return ()
+    source = path.read_text(errors="replace")
+    start = source.find("spells[NROFREALSPELLS]")
+    if start < 0:
+        return ()
+    end = source.find("};", start)
+    body = source[source.find("{", start) + 1:end]
+    table: list[tuple[str, str]] = []
+    depth = 0
+    entry = ""
+    for character in body:
+        if character == "{":
+            depth += 1
+            entry = ""
+            continue
+        if character == "}":
+            depth -= 1
+            tokens = re.findall(r'"[^"]*"|\bNULL\b', entry)
+            if len(tokens) >= 4:
+                # id, name, ..., sound, cast archetype, extra.
+                arch = tokens[-2].strip('"')
+                table.append((tokens[1].strip('"'), "" if arch == "NULL" else arch))
+            continue
+        if depth:
+            entry += character
+    return tuple(table)
 
 
 class FarmingAnalyzer:
@@ -95,6 +142,8 @@ class FarmingAnalyzer:
         self._spawn_cache: dict[str, list[SpawnProfile]] = {}
         self._npc_factions = self._load_npc_factions()
         self._signal_chances: tuple[int, ...] | None = None
+        # Missing server sources that degrade the encounter model.
+        self.source_warnings: set[str] = set()
         self._spell_table: tuple[tuple[str, str], ...] | None = None
         self._encounter_options: AnalysisOptions | None = None
         # Option-independent walkable tiles, seam crossings and terrain.
@@ -169,18 +218,14 @@ class FarmingAnalyzer:
 
         Entry ``n`` for a monster's Int means a one in ``n`` chance per AI
         action to wake allies; zero means never (types/monster.c 363-366).
+        A missing or unreadable table disables ally calls with a warning.
         """
         if self._signal_chances is None:
-            values: tuple[int, ...] = ()
-            path = self.server_root / "server" / "living.c"
-            if path.is_file():
-                match = re.search(
-                    r"monster_signal_chance\[[^\]]*\]\s*=\s*\{(.*?)\};",
-                    path.read_text(errors="replace"), re.S)
-                if match:
-                    body = re.sub(r"//[^\n]*|/\*.*?\*/", "", match.group(1), flags=re.S)
-                    values = tuple(int(item) for item in re.findall(r"-?\d+", body))
-            self._signal_chances = values
+            self._signal_chances = read_signal_table(self.server_root)
+            if not self._signal_chances:
+                self.source_warnings.add(
+                    "server/living.c monster_signal_chance[] not found: "
+                    "ally calls are not modelled")
         return self._signal_chances
 
     def _spells(self) -> tuple[tuple[str, str], ...]:
@@ -188,35 +233,15 @@ class FarmingAnalyzer:
 
         Monster ``ability`` objects (type 110) name a spell by its index in
         that table through ``sp``; the cast archetype's ``attack_*`` values
-        give the damage types.
+        give the damage types. A missing table leaves casters flagged without
+        spells or damage types, with a warning.
         """
         if self._spell_table is None:
-            table: list[tuple[str, str]] = []
-            path = self.server_root / "include" / "spellist.h"
-            if path.is_file():
-                source = path.read_text(errors="replace")
-                start = source.find("spells[NROFREALSPELLS]")
-                end = source.find("};", start)
-                body = source[source.find("{", start) + 1:end] if start >= 0 else ""
-                depth = 0
-                entry = ""
-                for character in body:
-                    if character == "{":
-                        depth += 1
-                        entry = ""
-                        continue
-                    if character == "}":
-                        depth -= 1
-                        tokens = re.findall(r'"([^"]*)"|\bNULL\b', entry)
-                        if len(tokens) >= 2:
-                            # id, name, ..., sound, cast archetype, extra.
-                            names = re.findall(r'"[^"]*"|\bNULL\b', entry)
-                            arch = names[-2].strip('"') if len(names) >= 4 else ""
-                            table.append((tokens[1], "" if arch == "NULL" else arch))
-                        continue
-                    if depth:
-                        entry += character
-            self._spell_table = tuple(table)
+            self._spell_table = read_spell_table(self.server_root)
+            if not self._spell_table:
+                self.source_warnings.add(
+                    "include/spellist.h spells[] not found: caster spells and "
+                    "damage types are not reported")
         return self._spell_table
 
     def _constant(self, name: str, default: int) -> int:
@@ -1427,16 +1452,17 @@ class FarmingAnalyzer:
         """Fill the level-independent encounter inputs of a monster."""
         profile.intelligence = max(0, _integer(attrs.get("int")))
         profile.faction = attrs.get("faction", "") or ""
-        # set_mobile_speed(): 2x authored speed idle, 4x (3x slow_move) with
-        # an enemy; one tile per action, MAX_TIME seconds per tick.
+        # set_mobile_speed(): 2x authored speed idle (1x with slow_move) and
+        # 4x (3x) with an enemy; one tile per action, MAX_TIME seconds per tick.
         base = abs(_number(attrs.get("speed")))
         if attrs.get("stand_still") == "1":
             profile.engaged_speed = 0.0
             profile.idle_speed = 0.0
         else:
-            engaged = 3.0 if attrs.get("slow_move") == "1" else 4.0
-            profile.engaged_speed = base * engaged / self.tick_seconds
-            profile.idle_speed = base * 2.0 / self.tick_seconds
+            # living.c 1851-1875: slow_move drops the idle doubling only.
+            slow = attrs.get("slow_move") == "1"
+            profile.engaged_speed = base * (3.0 if slow else 4.0) / self.tick_seconds
+            profile.idle_speed = base * (1.0 if slow else 2.0) / self.tick_seconds
         if attrs.get("random_move") == "1" and attrs.get("stand_still") != "1":
             limit_x = _integer(attrs.get("item_race"))
             limit_y = _integer(attrs.get("item_level"))
@@ -1824,9 +1850,12 @@ class FarmingAnalyzer:
             kill_seconds=kill_seconds, bonus=bonus,
             map_path=self.map_root.relative_to(self.root).as_posix() + key,
             local_x=spawn.x, local_y=spawn.y, own_map=own_map,
-            link_chance=sum(probability * link(profile)
-                            for probability, profile in candidates) / total,
-            link_group=spawn.link_group, faction=dominant.faction,
+            # Directly placed monsters have no spawn-point record to signal.
+            link_chance=(sum(probability * link(profile)
+                             for probability, profile in candidates) / total
+                         if spawn.source == "spawn" else 0.0),
+            link_group=spawn.link_group, spawn_point=spawn.source == "spawn",
+            faction=dominant.faction,
             engaged_speed=average("engaged_speed"), idle_speed=average("idle_speed"),
             wander_box=box, wander_tiles=wander_tiles,
             caster=caster, ranged=ranged, damage_types=tuple(sorted(damage_types)),
@@ -1914,12 +1943,20 @@ class FarmingAnalyzer:
 
     def encounter_options(self, options: AnalysisOptions, style: str | None = None,
                           aoe_targets: float | None = None) -> enc.EncounterOptions:
-        """Encounter inputs for a style; player speed defaults to 1.0 (8 tiles/s)."""
+        """Encounter inputs for a style.
+
+        Player tiles per second use the same conversion as route timing:
+        the displayed speed is added every server tick and one move costs one
+        unit (socket/request.c CS_STAT_SPEED, server/main.c speed_left), so
+        tiles/s = speed / MAX_TIME seconds. Without --character-speed the
+        documented assumption is ``DEFAULT_CHARACTER_SPEED`` (8 tiles/s at
+        the default 125 ms tick).
+        """
         profile = enc.style_profiles(options.kite_distance)[
             style or options.combat_style or "melee"]
         return enc.EncounterOptions(
             profile, options.healing_per_second,
-            (options.character_speed or 1.0) / self.tick_seconds,
+            (options.character_speed or DEFAULT_CHARACTER_SPEED) / self.tick_seconds,
             max(1.0, aoe_targets if aoe_targets is not None else options.targets_per_attack))
 
     def _apply_encounter(self, result: MapResult, key: str, spawns: list[SpawnProfile],
@@ -2343,23 +2380,28 @@ class FarmingAnalyzer:
 
     @staticmethod
     def _combine_encounters(members: list[MapResult], count: float) -> dict:
-        """A circuit is as hard as its hardest map's hardest pull."""
-        hardest = max(members, key=lambda member: (
-            member.encounter_need, member.encounter_worst_need, member.expected_pack))
+        """A circuit is rated by its hardest member map.
+
+        Every pull, pack, need, safety and reason field comes from that one
+        member (lowest encounter safety, then highest need), so they describe
+        the same map. Spawn counts, density, doorways and seam spawns are
+        circuit-wide totals or averages.
+        """
+        hardest = min(members, key=lambda member: (
+            member.encounter_safety, -member.encounter_need,
+            -member.encounter_worst_need, member.path))
         return {
             "encounter_style": members[0].encounter_style,
             "encounter_applied": members[0].encounter_applied,
-            "expected_pack": max(member.expected_pack for member in members),
+            "expected_pack": hardest.expected_pack,
             "mean_expected_pack": sum(
                 member.mean_expected_pack * member.spawns for member in members) / count,
-            "worst_pack": max(member.worst_pack for member in members),
-            "encounter_need": max(member.encounter_need for member in members),
-            "encounter_worst_need": max(member.encounter_worst_need for member in members),
-            "encounter_safety": min(member.encounter_safety for member in members),
-            "encounter_expected_safety": min(
-                member.encounter_expected_safety for member in members),
-            "encounter_worst_safety": min(
-                member.encounter_worst_safety for member in members),
+            "worst_pack": hardest.worst_pack,
+            "encounter_need": hardest.encounter_need,
+            "encounter_worst_need": hardest.encounter_worst_need,
+            "encounter_safety": hardest.encounter_safety,
+            "encounter_expected_safety": hardest.encounter_expected_safety,
+            "encounter_worst_safety": hardest.encounter_worst_safety,
             "encounter_pull": hardest.encounter_pull,
             "encounter_reasons": tuple(
                 f"{Path(hardest.path).name}: {line}" for line in hardest.encounter_reasons),

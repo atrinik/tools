@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from farming_analyzer import encounter as enc
+from farming_analyzer.analyzer import read_spell_table
 from farming_analyzer import (
     SERVER_ROOT,
     AnalysisOptions,
@@ -195,6 +196,66 @@ class EncounterEstimateTest(unittest.TestCase):
         kite_one, _options = model(cluster, style="aoe-kite", aoe=1.0)
         self.assertLess(aoe.need, kite_one.need)
 
+    def test_unkillable_target_next_to_a_wanderer_is_not_farmable(self):
+        wander = dict(wander_tiles=frozenset(field()), wander_box=(0, 0, 23, 23))
+        immune = spawn(10, 10, kill_seconds=math.inf)
+        for style in enc.STYLE_NAMES:
+            built, options = model([immune, spawn(12, 12, **wander),
+                                    spawn(14, 10, link_chance=0.2, faction="f")],
+                                   style=style)
+            self.assertTrue(math.isinf(built.need), style)
+            self.assertEqual(0.0, enc.safety_from_need(built.need, 300.0))
+            self.assertTrue(any("not farmable" in line
+                                for line in enc.reasons(built, options, 300.0)))
+        # An immune target that cannot hurt is still not farmable.
+        harmless, _options = model([spawn(10, 10, kill_seconds=math.inf, dps=0.0),
+                                    spawn(12, 12, **wander)])
+        self.assertTrue(math.isinf(harmless.need))
+        self.assertEqual(enc.FIGHT_HORIZON, enc.horizon(math.inf))
+        self.assertEqual(enc.FIGHT_HORIZON, enc.horizon(math.nan))
+
+    def test_kiters_are_not_safe_against_a_huge_slow_pack(self):
+        horde = [spawn(x, y) for x in range(4, 9) for y in range(4, 8)]
+        self.assertEqual(20, len(horde))
+        for style, aoe, ratings in (("ranged-kite", 1.0, ("fair", "hard", "deadly")),
+                                    ("aoe-kite", 4.0, ("hard", "deadly", "lethal"))):
+            built, _options = model(horde, style=style, aoe=aoe)
+            bad = enc.bad_pull_safety(built.worst_need, 600.0)
+            safety = enc.blended_safety(enc.safety_from_need(built.need, 600.0), bad)
+            self.assertGreaterEqual(built.worst_pack, 9.0, style)
+            # The whole horde engaged costs several health bars for a kiter.
+            self.assertLess(bad, 0.3, style)
+            self.assertIn(enc.rating(safety), ratings, style)
+        # A single-target shooter can still pick members off from range.
+        single, _options = model(horde, style="ranged-kite")
+        self.assertLess(single.expected_pack, 1.5)
+        # Uptime of slow melee grows with the attackers closing escape routes.
+        options = enc.EncounterOptions(enc.style_profiles()["ranged-kite"], 0.0, 8.0)
+        slow = spawn(0, 0)
+        self.assertAlmostEqual(0.1, enc.melee_uptime(slow, options, 0.9, 1.0))
+        self.assertAlmostEqual(0.55, enc.melee_uptime(slow, options, 0.9, 5.0))
+        self.assertEqual(1.0, enc.melee_uptime(slow, options, 0.9, 9.0))
+
+    def test_static_monsters_neither_call_nor_answer(self):
+        caller = dict(link_chance=1 / 6, faction="monsters", link_group="pack")
+        linked, _options = model([spawn(4, 4, **caller), spawn(20, 20, **caller)])
+        self.assertGreater(linked.expected_pack, 1.9)
+        static, _options = model([spawn(4, 4, spawn_point=False, **caller),
+                                  spawn(20, 20, spawn_point=False, **caller)])
+        self.assertEqual(1.0, static.expected_pack)
+
+    def test_a_called_passive_ally_fights(self):
+        caller = dict(link_chance=1 / 6, faction="monsters", link_group="pack")
+        built, _options = model([spawn(4, 4, **caller),
+                                 spawn(20, 20, aggressive=0.0, **caller)])
+        pull = next(pull for pull in built.pulls if pull.target == 0)
+        self.assertGreater(pull.expected, 1.9)
+        self.assertIn(1, pull.worst_joiners)
+
+    def test_seams_without_crossable_tiles_are_omitted(self):
+        terrain = enc.analyze_terrain(4, 4, field(4, 4), {0: set(), 1: {(3, 0)}})
+        self.assertEqual({"east": 1}, terrain.seams)
+
     def test_healing_offsets_sustained_damage(self):
         built, _options = model([spawn(2, 2), spawn(12, 12)], healing=10.0)
         self.assertEqual(0.0, built.need)
@@ -277,11 +338,36 @@ exp 200
 end
 Object ability_firestorm
 type 110
+sp {firestorm_index}
 end
-Object firebreath
+Object {firestorm_arch}
 attack_fire 100
 end
+Object slowpoke
+name slowpoke
+type 80
+monster 1
+level 10
+maxhp 60
+dam 40
+wc 10
+ac 1
+speed 0.05
+slow_move 1
+weapon_speed 1
+item_power 3
+faction monsters
+exp 200
+end
 """
+
+
+def spell_archetypes() -> str:
+    """The test archetypes, with firestorm's index and cast archetype read
+    from the server's spell table rather than assumed."""
+    table = read_spell_table(SERVER_ROOT)
+    index = next(number for number, (name, _arch) in enumerate(table) if name == "firestorm")
+    return ARCHETYPES.format(firestorm_index=index, firestorm_arch=table[index][1])
 
 SIZE = 24
 
@@ -313,7 +399,7 @@ class AnalyzerEncounterTest(unittest.TestCase):
         cls.directory = tempfile.TemporaryDirectory()
         root = Path(cls.directory.name)
         (root / "arch").mkdir()
-        (root / "arch" / "test.arc").write_text(ARCHETYPES)
+        (root / "arch" / "test.arc").write_text(spell_archetypes())
         maps = root / "maps" / "forest"
         maps.mkdir(parents=True)
         (root / "maps" / "regions.reg").write_text("region forest\nlongname Forest\nend\n")
@@ -388,6 +474,47 @@ class AnalyzerEncounterTest(unittest.TestCase):
         self.assertEqual(2, len(casters))
         self.assertEqual(["fire"], casters[0]["damage_types"])
         self.assertEqual(["firestorm"], casters[0]["spells"])
+        self.assertEqual(set(), self.analyzer.source_warnings)
+
+    def test_slow_move_halves_idle_speed_only(self):
+        spawns, _competitors = self.analyzer._spawns_cached(
+            "/forest/world_9_9", self.options(), False)
+        brute = spawns[-1].candidates[0][1]
+        # living.c 1851-1875: 2x idle, 4x fighting; slow_move 1x and 3x.
+        self.assertAlmostEqual(0.05 * 2 / 0.125, brute.idle_speed)
+        self.assertAlmostEqual(0.05 * 4 / 0.125, brute.engaged_speed)
+        profile = self.analyzer._monster_profile(
+            {"arch": "slowpoke", "attrs": {}, "children": []}, 10, self.options())
+        self.assertAlmostEqual(0.05 / 0.125, profile.idle_speed)
+        self.assertAlmostEqual(0.05 * 3 / 0.125, profile.engaged_speed)
+
+    def test_circuit_encounter_fields_come_from_one_member(self):
+        results = self.results(self.options(combat_style="melee"))
+        dense, sparse = results[DENSE], results[SPARSE]
+        combined = FarmingAnalyzer._combine_encounters([sparse, dense], 10.0)
+        for key in ("expected_pack", "worst_pack", "encounter_need",
+                    "encounter_worst_need", "encounter_safety", "encounter_pull"):
+            self.assertEqual(getattr(dense, key), combined[key], key)
+        self.assertTrue(all(line.startswith("world_0_0: ")
+                            for line in combined["encounter_reasons"]))
+
+    def test_missing_server_tables_warn(self):
+        with tempfile.TemporaryDirectory() as directory:
+            server = Path(directory) / "src"
+            for source in SERVER_ROOT.rglob("*"):
+                relative = source.relative_to(SERVER_ROOT)
+                if source.is_dir() or relative.as_posix() in (
+                        "server/living.c", "include/spellist.h"):
+                    continue
+                target = server / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.symlink_to(source)
+            analyzer = FarmingAnalyzer(Path(self.directory.name), server)
+            results = {result.path: result for result in analyzer.scan(self.options())}
+            self.assertEqual(2.0, results[CRYPT].caster_spawns)
+            self.assertEqual(2, len(analyzer.source_warnings))
+            self.assertTrue(any("living.c" in item for item in analyzer.source_warnings))
+            self.assertTrue(any("spellist.h" in item for item in analyzer.source_warnings))
 
     def test_relative_mode_without_health(self):
         results = self.results(self.options(max_health=0.0, combat_style="melee"))
@@ -471,9 +598,15 @@ SHATTERED = ROOT / "maps" / "shattered_islands"
 
 
 @unittest.skipUnless((SHATTERED / "world_16_74").is_file(),
-                     "requires the sibling content checkout")
+                     "CONTENT-DEPENDENT: requires the sibling content checkout "
+                     f"at {SHATTERED.parent.parent}; Burnt Forest regression not run")
 class BurntForestTest(unittest.TestCase):
-    """Regression for the 2026-11-25 Burnt Forest deaths of the playtester."""
+    """Regression for the 2026-11-25 Burnt Forest deaths of the playtester.
+
+    Content-dependent: it reads the authored Burnt Forest maps, so it uses
+    ranges and orderings rather than exact values, and content edits to
+    these maps may legitimately move it.
+    """
 
     @classmethod
     def setUpClass(cls):
@@ -500,14 +633,14 @@ class BurntForestTest(unittest.TestCase):
 
     def test_dense_world_16_74_forms_packs_and_is_not_saturated(self):
         old = self.results(self.sera(combat_style=""))["world_16_74"]
-        self.assertEqual(1.0, old.max_aggro_pack)
-        self.assertEqual(1.0, old.safety_score)
+        self.assertLessEqual(old.max_aggro_pack, 1.5)
+        self.assertGreater(old.safety_score, 0.95)
         dense = self.results(self.sera())["world_16_74"]
         self.assertGreaterEqual(dense.worst_pack, 2.0)
         self.assertGreater(dense.expected_pack, 1.0)
-        self.assertLess(dense.encounter_safety, 1.0)
-        self.assertLess(dense.safety_score, 1.0)
-        self.assertEqual(2.0, dense.wanderer_spawns)
+        self.assertLess(dense.encounter_safety, 0.95)
+        self.assertLess(dense.safety_score, old.safety_score)
+        self.assertGreaterEqual(dense.wanderer_spawns, 1.0)
 
     def test_sparse_southern_maps_rate_safer(self):
         results = self.results(self.sera())
@@ -517,10 +650,22 @@ class BurntForestTest(unittest.TestCase):
         # The L38-40 map where she died twice rates hardest of all.
         self.assertLess(results["world_17_72"].safety_score, dense)
 
-    def test_kiting_the_slow_treants_is_safer_than_melee(self):
-        melee = self.results(self.sera())["world_16_74"]
-        kite = self.results(self.sera(combat_style="ranged-kite"))["world_16_74"]
-        self.assertGreater(kite.encounter_safety, melee.encounter_safety)
+    def test_aoe_kiting_the_big_treant_packs_is_not_safe(self):
+        results = self.results(self.sera(combat_style="aoe-kite", targets_per_attack=4))
+        dense = results["world_16_74"]
+        self.assertGreaterEqual(dense.worst_pack, 9.0)
+        self.assertLess(dense.encounter_safety, 0.65)
+
+    def test_whole_content_scan_with_immune_monsters_does_not_raise(self):
+        # Fire-only melee: several hostile archetypes have protect_fire 100.
+        results = self.analyzer.scan(self.sera(
+            path_pattern=None, player_attacks=(("fire", 100),), max_level_gap=200,
+            combat_style=""))
+        self.assertTrue(results)
+        unfarmable = [result for result in results
+                      if not math.isfinite(result.encounter_need)]
+        self.assertTrue(unfarmable)
+        self.assertTrue(all(result.encounter_safety == 0.0 for result in unfarmable))
 
     def test_graveyard_skeleton_mages_are_flagged_at_night(self):
         options = self.sera(player_level=20, character_level=20, at_minute=0,

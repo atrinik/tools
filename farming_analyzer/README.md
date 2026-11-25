@@ -359,25 +359,47 @@ that estimate with explicit, documented heuristics. Each cites the classic
 server code it stands for (`classic/server/src`); the analyzer reads that code
 and the authored content as data and copies none of it.
 
-**What it reads per spawn.** Position; aggressive or passive
-(`unaggressive`); detection radius `item_power`, plus 3 for a monster that
-already has an enemy or was attacked (`types/monster.c` 1084-1100); chase
-range `max(9, item_power)`, since an engaged monster keeps its target until
-it is that far away for more than 12 checks (`types/monster.c` 558-580,
-`include/global.h` 175-179); the per-action ally-call chance
-`1 / monster_signal_chance[Int]`, read from `server/living.c` 154-162 (zero
-means never). Allies answer when they share the caller's faction and stand
-within `item_power * 1.5 - 1` tiles of it, or when they sit on a spawn point
-with the same `title`, which always answers (`types/monster.c` 288-420).
-Then: `random_move` wanderers and their `item_race` x `item_level` box
-(unbounded when both are 0; `types/monster.c` 1160-1225); movement speed
-(2x authored speed idle, 4x or 3x with `slow_move` while fighting;
-`stand_still` never moves); casters (`can_cast_spell`), whose `ability`
-objects name a spell index in `include/spellist.h` whose cast archetype's
-`attack_*` gives the damage types; and archers (`can_use_bow`, reported as
-`missile`). Spawns on the eight tiled neighbours are shifted into the map's
-frame and included when they come within 12 tiles of it, so a pull near a
-seam sees them.
+**What it reads per spawn.**
+
+- position, and aggressive or passive (`unaggressive`);
+- detection radius `item_power`. The server adds 3 tiles only for a
+  monster that already has an enemy or attacker (`types/monster.c`
+  1084-1100) and halves the radius for sleeping or blind monsters; the
+  halving is not modelled;
+- chase range `max(9, item_power)`: an engaged monster keeps its target
+  until it is that far away for more than 12 checks (`types/monster.c`
+  558-580, `include/global.h` 175-179). It is reported (`chase_range`) but
+  not used by the estimate; the style's bad-pull footprint stands in for a
+  chase or retreat;
+- the per-action ally-call chance `1 / monster_signal_chance[Int]`, read
+  from `server/living.c` 154-162 (zero means never). Only spawned monsters
+  call and answer: a directly placed monster has no spawn-point record
+  (`types/monster.c` 363-374). Allies answer when they sit on a spawn point
+  with the same `title`, or when they share the caller's faction and stand
+  within `item_power * 1.5 - 1` tiles of it (`types/monster.c` 288-420). A
+  called passive monster fights too. Deviation: factions allied only
+  through an alliance parent (`faction_is_alliance()`, `server/faction.c`
+  645) are not linked;
+- `random_move` wanderers and their `item_race` x `item_level` box
+  (unbounded when both are 0; `types/monster.c` 1160-1225);
+- movement speed from `set_mobile_speed()` (`server/living.c` 1851-1875):
+  2x authored speed idle and 4x fighting, or 1x and 3x with `slow_move`;
+  `stand_still` never moves;
+- casters (`can_cast_spell`), whose `ability` objects name a spell index in
+  `include/spellist.h`; the cast archetype's `attack_*` gives the damage
+  types;
+- archers (`can_use_bow`, reported as `missile`).
+
+Spawns on the eight tiled neighbours are shifted into the map's frame and
+included when they come within 12 tiles of it, so a pull near a seam sees
+them.
+
+The ally-call table and the spell table come from `server/living.c` and
+`include/spellist.h`. When either is missing the scan continues without
+ally calls, or without spells and damage types, and adds a warning to
+`warnings` in JSON (and a `Warning:` line in text and the report). A
+consumer that pins a server source subset, such as the playtester lock's
+`classic_server.required_paths`, must include both files.
 
 **Terrain.** From walkable tiles (terrain flags minus `no_pass` blockers;
 doors count as open):
@@ -390,7 +412,8 @@ doors count as open):
 - one-tile-wide corridor tiles, and **doorways** (corridor runs of at most
   two tiles);
 - dead ends;
-- crossable seam tiles per cardinal direction.
+- crossable seam tiles per cardinal direction (directions with none are
+  omitted).
 
 **A pull.** For each target spawn the character picks a pull square: a
 walkable tile within the target's detection radius (adjacent for a passive
@@ -410,9 +433,19 @@ target's kill time:
 - melee monsters in another walkable region never join; casters and archers
   can (line of sight is not modelled).
 
-The **bad pull** (worst case) uses the engaged radius (+3) and the style's
-worst footprint, and adds every wanderer and ally call that is more likely
-than not to join. Those beyond the ordinary reach arrive half-way through.
+The **bad pull** (worst case) adds a 3-tile margin to every aggressive
+monster's radius and uses the style's worst footprint. The margin matches
+the server's engaged widening, but applying it to idle bystanders is a
+deliberate safety margin for a fight that drifts or a retreat, not server
+behaviour. The bad pull also adds every wanderer and ally call that is more
+likely than not to join. Those beyond the ordinary reach arrive half-way
+through.
+
+A target the character cannot hurt (infinite kill time, for example a
+fire-only character against a fire-immune monster) makes the pull **not
+farmable**. Its need is infinite and the map's encounter safety 0, and a
+`not farmable` reason names the monster. Spreads, calls and arrival times
+for such a pull use a 120-second horizon so nothing overflows.
 
 **The clear.** Pulls are taken easiest first. After each pull its expected
 joiners are removed from the map, so a wanderer that joined an early pull is
@@ -440,13 +473,23 @@ bows, drain, poison, ...).
 | `aoe-kite` | kite distance (+3) | gathers packs; each attack hits `--targets-per-attack` (or the `--aoe-radius` estimate) |
 
 Kiting styles keep a melee monster that is slower than the character away
-except when cramped ground corners them, so its uptime is `1 - kite room`.
-Stepping away costs attack time: the kill takes `1 + monster speed / player
-speed` times longer. A monster at least as fast as the character, and every
-caster or archer, hits at full rate in every style. A slow melee pack is
-therefore cheap for a kiter and expensive for a melee healer. Player speed is
-`--character-speed` (default 1.0) divided by the tick, about 8 tiles per
-second at speed 1.0. `--kite-distance` defaults to 4.
+only where there is kite room, and only while escape directions stay open.
+Each attacker beyond the first is assumed to close one of eight
+directions, so a slow monster's uptime is `1 - kite room x max(0, 1 -
+(attackers - 1) / 8)`. Nine or more attackers hit a kiter as hard as a
+melee character. Stepping away costs attack time: the kill takes `1 +
+monster speed / player speed` times longer. A monster at least as fast as
+the character, and every caster or archer, hits at full rate in every
+style. A small slow pack is therefore cheap for a kiter and expensive for a
+melee healer, while a huge pack is not safe for either.
+
+Player movement uses the same conversion as route timing (see "Topology,
+AoE, and encounter simulation"). The displayed speed is added every server
+tick and a move costs one unit (`socket/request.c` `CS_STAT_SPEED`,
+`server/main.c` `speed_left`), so tiles per second = speed / tick length.
+Without `--character-speed` the encounter model assumes displayed speed 1.0
+(`DEFAULT_CHARACTER_SPEED`), which is 8 tiles per second at the default 125
+ms tick. Pass the character's real speed. `--kite-distance` defaults to 4.
 
 **Safety.** With `--max-health`:
 
@@ -457,7 +500,10 @@ second at speed 1.0. `--kite-distance` defaults to 4.
 - `encounter_safety` is `0.75 x expected + 0.25 x bad pull`.
 
 Without `--max-health`, both parts are relative to the cheapest pull of the
-scan. Circuits take their hardest member.
+scan. A circuit takes every pull, pack, need, safety and reason field from
+its hardest member (lowest encounter safety, then highest need), so they
+describe one map. Counts, density, doorways and seam spawns are
+circuit-wide.
 
 **Backward compatibility.** Without `--combat-style`, `safety_score` and
 every other existing field are unchanged. The encounter fields are reported
@@ -524,9 +570,12 @@ The JSON schema (`schema` `atrinik.farming_analyzer.difficulty_report`,
 `schema_version` 1) is meant for editors to read. New fields may be added;
 renamed or removed fields bump `schema_version`.
 
+- `warnings`: missing server sources that degraded the model (see above).
 - `reference_character`, `styles` (name to description), `rating_scale`:
   `easy` ≥ 0.85, `fair` ≥ 0.65, `hard` ≥ 0.40, `deadly` > 0, `lethal` 0.
-- `maps[]`, one per map with hostile spawns:
+- `maps[]`, one per map with at least one hostile spawn-point monster
+  active at `--time`, or a hostile directly placed monster with
+  `--include-static`:
   - `path` (content-relative), `name`, `region`, `width`, `height`,
     `monster_levels` `{min, max, average}`, `levels` (bands rated);
   - `terrain`: `walkable_tiles`, `walkable_fraction`, `regions`,
@@ -584,6 +633,10 @@ safety and the report. Planned next steps, in order of value:
    seam crossings between member maps.
 7. **Tilewright**: an overlay of the JSON report (hotspots, pull squares,
    wander boxes, doorways) and per-edit re-rating.
+8. **Server parity**: resolve faction alliance parents for ally calls and
+   halve detection for authored sleeping or blind monsters.
+9. **CI**: run the analyzer suite in `Check` with pinned classic server
+   source and content checkouts.
 
 ## Profiles, rankings, diagnostics, and training
 
@@ -822,11 +875,16 @@ maps: pull cost, terrain structure, packs, wanderers, ally calls, walls,
 styles and hotspots. It also checks the scan's backward compatibility, the
 CLI and the report schema. With the content checkout present,
 `BurntForestTest` checks the playtester's live level 37 melee-healer kit:
-world_16_74 forms packs (bad pull at least 2) and rates below 1.0; the sparse
-southern maps (world_15_75, world_15_76, world_16_75, world_16_76) rate
-safer; world_17_72 rates hardest; kiting the slow treants rates safer than
-melee; and the Forgotten Graveyard's night skeleton mages are flagged as
-fire casters.
+world_16_74 forms packs (bad pull at least 2) and rates clearly below its
+old score; the sparse southern maps (world_15_75, world_15_76, world_16_75,
+world_16_76) rate safer; world_17_72 rates hardest; AoE kiting the big
+treant packs is not safe; the Forgotten Graveyard's night skeleton mages
+are flagged as fire casters; and a whole-content scan of a fire-only
+character, against fire-immune monsters, finishes with those maps marked
+not farmable. It is content-dependent, so it asserts ranges and orderings,
+and it is skipped with a `CONTENT-DEPENDENT` reason without the checkout.
+The analyzer suite needs the classic server source and content checkouts
+and is not part of CI yet.
 
 Run the focused regression suite from the repository root:
 
