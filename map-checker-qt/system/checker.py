@@ -830,6 +830,15 @@ class CheckerObject(AbstractChecker):
                           "average level of monsters it contains.",
                           obj=obj)
 
+        if not self._monster_has_loot(obj):
+            self.addError("warning", "Monster has no loot.",
+                          "Every monster and NPC should drop some loot. Set "
+                          "a <b>randomitems</b> treasure list or give it "
+                          "droppable inventory items. Without either, the "
+                          "server logs an error and drops its generic "
+                          "fallback loot instead.",
+                          obj=obj)
+
         has_say_event = False
 
         for tmp in obj.inv:
@@ -873,6 +882,32 @@ class CheckerObject(AbstractChecker):
             self.addError("critical", "Monster is not inside a spawn point.",
                           "All monsters should always be inside a spawn point.",
                           obj=obj)
+
+    @staticmethod
+    def _is_droppable_loot(obj):
+        if obj.getAttributeInt("type") in (Game.Types.event_object,
+                                           Game.Types.quest_container):
+            return False
+
+        for attr in ("sys_object", "startequip", "no_drop"):
+            if obj.getAttributeInt(attr) == 1:
+                return False
+
+        return True
+
+    def _monster_has_loot(self, obj):
+        randomitems = obj.getAttribute("randomitems")
+
+        if randomitems and randomitems not in ("none", "empty"):
+            return True
+
+        inventories = [obj.inv]
+
+        if obj.arch is not None:
+            inventories.append(getattr(obj.arch, "inv", []))
+
+        return any(self._is_droppable_loot(tmp)
+                   for inv in inventories for tmp in inv)
 
     def checker_anim(self, obj):
         t = obj.getAttributeInt("type")
