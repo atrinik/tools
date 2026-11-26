@@ -67,6 +67,32 @@ python3 map-checker.py --cli \
   --directory /path/to/runtime/maps
 ```
 
+### Baselines for CI
+
+Content has many existing findings, so CI compares a full scan against a
+committed baseline and fails only on findings the baseline doesn't cover:
+
+```sh
+# Record the current findings (run once, and again after fixing findings).
+python3 map-checker.py --content-root /path/to/content \
+  --arch /path/to/runtime/lib \
+  --regions /path/to/runtime/maps/regions.reg \
+  --directory /path/to/runtime/maps \
+  --write-baseline map-checker-baseline.json
+
+# Fail (status 1) when the scan has findings missing from the baseline.
+python3 map-checker.py ... --baseline map-checker-baseline.json
+```
+
+Both options imply `--cli` and purge the scan cache first, so every run is a
+complete, repeatable scan. A finding is keyed by its file path (relative to
+`--baseline-root`, which defaults to `--directory`), severity and description
+without coordinates. Moving an object doesn't create a new finding, but adding
+another copy of an existing problem to the same file does. `fixed` results are
+ignored. Catalog diagnostics are never baselined, and a catalog failure
+still returns status 1. An unreadable or unsupported baseline returns
+status 2.
+
 The repository-wide identity catalog always runs first, including when
 `--map` or `--directory` narrows the focused scan. In the GUI, set
 `path_dir_content` in `~/.map_checker.cfg`; catalog diagnostics appear in the

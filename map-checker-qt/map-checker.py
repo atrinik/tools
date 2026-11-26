@@ -14,6 +14,7 @@ import logging.handlers
 
 from system.checker import CheckerMap, CheckerObject, CheckerArchetype, \
     AbstractChecker
+from system import baseline
 from system.catalog import CatalogValidator
 from system.config import Config
 import system.constants
@@ -411,7 +412,9 @@ def main(argv=None, config_factory=Config, map_checker_factory=MapChecker):
                                    ["help", "cli", "fix", "directory=",
                                     "map=", "arch=", "regions=", "text-only",
                                     "real-map-path=", "show-filenames",
-                                    "content-root=", "catalog-only"])
+                                    "content-root=", "catalog-only",
+                                    "baseline=", "write-baseline=",
+                                    "baseline-root="])
     except getopt.GetoptError as err:
         # Invalid option, show the error and exit.
         print(err)
@@ -424,6 +427,9 @@ def main(argv=None, config_factory=Config, map_checker_factory=MapChecker):
     real_map_path = None
     show_filenames = False
     catalog_only = False
+    baseline_path = None
+    write_baseline_path = None
+    baseline_root = None
 
     # Parse options.
     for o, a in opts:
@@ -444,6 +450,14 @@ def main(argv=None, config_factory=Config, map_checker_factory=MapChecker):
             show_filenames = True
         elif o == "--content-root":
             config.set("General", "path_dir_content", a)
+        elif o == "--baseline":
+            baseline_path = a
+            cli = True
+        elif o == "--write-baseline":
+            write_baseline_path = a
+            cli = True
+        elif o == "--baseline-root":
+            baseline_root = a
         elif o == "--catalog-only":
             catalog_only = True
             cli = True
@@ -472,18 +486,52 @@ def main(argv=None, config_factory=Config, map_checker_factory=MapChecker):
 
         ret = app.exec_()
     else:
+        if baseline_path is not None or write_baseline_path is not None:
+            # Baseline comparisons need a complete, repeatable scan, not
+            # findings replayed from (or accumulated in) the scan cache.
+            map_checker.db.purge()
+
         succeeded = map_checker.scan(path=path, files=files, fix=fix,
                                      threading=False,
                                      real_map_path=real_map_path,
                                      catalog_only=catalog_only)
         ret = 0 if succeeded else 1
 
+        errors = []
         while map_checker.queue.qsize():
             try:
-                error = map_checker.queue.get(0)
-                _print_cli_error(error, show_filenames)
+                errors.append(map_checker.queue.get(0))
             except queue.Empty:
                 pass
+
+        if baseline_root is None:
+            baseline_root = path
+
+        if write_baseline_path is not None:
+            total = baseline.write_baseline(write_baseline_path, errors,
+                                            baseline_root)
+            print("Wrote {} findings to {}.".format(total,
+                                                    write_baseline_path))
+        elif baseline_path is not None:
+            try:
+                known = baseline.load_baseline(baseline_path)
+            except (OSError, ValueError, KeyError) as err:
+                print("Cannot load baseline: {}".format(err))
+                return 2
+
+            errors = baseline.new_findings(errors, known, baseline_root)
+            for error in errors:
+                _print_cli_error(error, show_filenames)
+
+            if errors:
+                print("{} new map checker findings not in baseline "
+                      "{}.".format(len(errors), baseline_path))
+                ret = 1
+            else:
+                print("No new map checker findings.")
+        else:
+            for error in errors:
+                _print_cli_error(error, show_filenames)
 
     # Headless checks must not mutate a user's GUI preferences.
     if not cli:
